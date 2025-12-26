@@ -336,6 +336,152 @@ def get_acpi_wakeup_devices():
     return devices
 
 
+def get_pci_device_description(pci_addr):
+    """Get a description for a PCI device from sysfs."""
+    # pci_addr format: "pci:0000:0d:00.3" -> "0000:0d:00.3"
+    if pci_addr.startswith("pci:"):
+        addr = pci_addr[4:]
+    else:
+        addr = pci_addr
+
+    device_path = Path(f"/sys/bus/pci/devices/{addr}")
+    if not device_path.exists():
+        return None
+
+    description_parts = []
+
+    # Try to get class description
+    class_file = device_path / "class"
+    if class_file.exists():
+        try:
+            class_code = class_file.read_text().strip()
+            # Class codes: 0x0c03xx = USB, 0x0200xx = Ethernet, etc.
+            class_map = {
+                "0x0c03": "USB Controller",
+                "0x0c05": "SMBus Controller",
+                "0x0200": "Ethernet Controller",
+                "0x0280": "Network Controller",
+                "0x0300": "VGA Controller",
+                "0x0403": "Audio Device",
+                "0x0108": "NVMe Controller",
+                "0x0106": "SATA Controller",
+                "0x0604": "PCI Bridge",
+                "0x0600": "Host Bridge",
+                "0x0580": "Memory Controller",
+            }
+            class_prefix = class_code[:6]
+            if class_prefix in class_map:
+                description_parts.append(class_map[class_prefix])
+        except (PermissionError, OSError):
+            pass
+
+    # Try vendor/device for more specific info
+    vendor_file = device_path / "vendor"
+    device_file = device_path / "device"
+    if vendor_file.exists() and device_file.exists():
+        try:
+            vendor = vendor_file.read_text().strip()
+            # Common vendors
+            vendor_map = {
+                "0x1022": "AMD",
+                "0x10de": "NVIDIA",
+                "0x8086": "Intel",
+                "0x1002": "AMD/ATI",
+                "0x14c3": "MediaTek",
+                "0x10ec": "Realtek",
+            }
+            if vendor in vendor_map and not description_parts:
+                description_parts.insert(0, vendor_map[vendor])
+        except (PermissionError, OSError):
+            pass
+
+    return " ".join(description_parts) if description_parts else None
+
+
+def get_device_wakeup_stats(sysfs_node):
+    """Get wakeup statistics for a device."""
+    if not sysfs_node:
+        return None
+
+    # Convert sysfs node to path
+    if sysfs_node.startswith("pci:"):
+        addr = sysfs_node[4:]
+        base_path = Path(f"/sys/bus/pci/devices/{addr}/power")
+    else:
+        return None
+
+    if not base_path.exists():
+        return None
+
+    stats = {}
+    stat_files = ["wakeup_count", "wakeup_active_count", "wakeup_last_time_ms"]
+    for stat in stat_files:
+        stat_file = base_path / stat
+        if stat_file.exists():
+            try:
+                stats[stat] = stat_file.read_text().strip()
+            except (PermissionError, OSError):
+                pass
+
+    return stats if stats else None
+
+
+def cmd_devicequery(args):
+    """Handle the 'devicequery' command."""
+    print("WAKE-CAPABLE DEVICES")
+    print("=" * 50)
+
+    devices = get_acpi_wakeup_devices()
+
+    # Filter if requested
+    if args.enabled_only:
+        devices = [d for d in devices if d["enabled"]]
+
+    print("\n[ACPI WAKE DEVICES]")
+    print("-" * 30)
+
+    if devices:
+        # Print header
+        print(f"  {'Device':<8} {'State':<6} {'Status':<10} {'Description'}")
+        print(f"  {'-'*6:<8} {'-'*5:<6} {'-'*8:<10} {'-'*20}")
+
+        for dev in devices:
+            status = "enabled" if dev["enabled"] else "disabled"
+            desc = ""
+            if dev["sysfs"]:
+                pci_desc = get_pci_device_description(dev["sysfs"])
+                if pci_desc:
+                    desc = pci_desc
+                else:
+                    desc = dev["sysfs"]
+
+            print(f"  {dev['device']:<8} {dev['state']:<6} {status:<10} {desc}")
+
+            # Show stats in verbose mode
+            if args.verbose and dev["sysfs"]:
+                stats = get_device_wakeup_stats(dev["sysfs"])
+                if stats:
+                    if "wakeup_count" in stats and stats["wakeup_count"] != "0":
+                        print(f"           Wake count: {stats['wakeup_count']}")
+    else:
+        print("  No ACPI wake devices found.")
+
+    # USB devices with wakeup capability
+    usb_devices = get_usb_wakeup_devices()
+    if usb_devices:
+        print("\n[USB WAKE DEVICES]")
+        print("-" * 30)
+        for dev in usb_devices:
+            status = "enabled"
+            print(f"  {dev['device']:<12} {status:<10} {dev['name']}")
+
+    # Summary
+    enabled_count = len([d for d in devices if d["enabled"]]) + len(usb_devices)
+    total_count = len(devices) + len(usb_devices)
+    print("\n" + "=" * 50)
+    print(f"Wake-enabled devices: {enabled_count} of {total_count}")
+
+
 def get_wake_source_from_dmesg():
     """Try to identify wake source from dmesg."""
     try:
@@ -567,6 +713,8 @@ Examples:
   %(prog)s lastwake            Show last wake information
   %(prog)s lastwake -v         Show with ACPI devices and kernel messages
   %(prog)s lastwake -n 10      Show last 10 sleep/wake events
+  %(prog)s devicequery         Show devices that can wake the system
+  %(prog)s devicequery -v      Show with wakeup statistics
         """
     )
 
@@ -601,6 +749,23 @@ Examples:
         help="Show last N sleep/wake events"
     )
     lastwake_parser.set_defaults(func=cmd_lastwake)
+
+    # 'devicequery' subcommand
+    devicequery_parser = subparsers.add_parser(
+        "devicequery",
+        help="Display devices that can wake the system"
+    )
+    devicequery_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show wakeup statistics for devices"
+    )
+    devicequery_parser.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="Only show devices with wakeup enabled"
+    )
+    devicequery_parser.set_defaults(func=cmd_devicequery)
 
     args = parser.parse_args()
 
