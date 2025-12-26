@@ -638,6 +638,137 @@ def cmd_sleepstates(args):
     print("\n" + "=" * 50)
 
 
+def get_systemd_timers():
+    """Get all systemd timers with their next activation time."""
+    timers = []
+    try:
+        result = subprocess.run(
+            ["systemctl", "list-timers", "--all", "--no-pager", "--no-legend"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().split('\n'):
+                parts = line.split()
+                if len(parts) >= 5:
+                    # Format: NEXT LEFT LAST PASSED UNIT ACTIVATES
+                    # Handle "n/a" for NEXT
+                    if parts[0] == "n/a":
+                        next_time = "n/a"
+                        unit_idx = 2  # Skip "n/a n/a"
+                    else:
+                        # Try to find the .timer unit in the line
+                        next_time = " ".join(parts[:4])  # Date time timezone
+                        unit_idx = -2  # Second to last is usually the timer unit
+
+                    # Find the timer unit name
+                    for i, part in enumerate(parts):
+                        if part.endswith(".timer"):
+                            timers.append({
+                                "next": next_time if parts[0] != "n/a" else "n/a",
+                                "unit": part,
+                            })
+                            break
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return timers
+
+
+def get_timer_wake_property(timer_name):
+    """Check if a timer has WakeSystem=yes."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", timer_name, "--property=WakeSystem"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return "yes" in result.stdout.lower()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return False
+
+
+def get_rtc_wakealarm():
+    """Check for scheduled RTC wake alarm."""
+    wakealarm_path = Path("/sys/class/rtc/rtc0/wakealarm")
+    if wakealarm_path.exists():
+        try:
+            content = wakealarm_path.read_text().strip()
+            if content and content != "0":
+                # Convert epoch to datetime
+                try:
+                    wake_time = datetime.fromtimestamp(int(content))
+                    return wake_time.strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, OSError):
+                    return content
+        except (PermissionError, OSError):
+            pass
+    return None
+
+
+def cmd_waketimers(args):
+    """Handle the 'waketimers' command."""
+    print("WAKE TIMERS")
+    print("=" * 50)
+
+    # Get all timers
+    timers = get_systemd_timers()
+
+    # Check which have WakeSystem=yes
+    wake_timers = []
+    all_timers = []
+
+    for timer in timers:
+        has_wake = get_timer_wake_property(timer["unit"])
+        timer["wakes"] = has_wake
+        all_timers.append(timer)
+        if has_wake:
+            wake_timers.append(timer)
+
+    # Show wake-capable timers
+    print("\n[TIMERS WITH WAKESYSTEM=YES]")
+    print("-" * 30)
+    if wake_timers:
+        for timer in wake_timers:
+            print(f"  {timer['unit']}")
+            print(f"    Next: {timer['next']}")
+    else:
+        print("  None - no timers will wake the system from sleep")
+
+    # Show all timers in verbose mode
+    if args.verbose and all_timers:
+        print("\n[ALL SCHEDULED TIMERS]")
+        print("-" * 30)
+        print(f"  {'Timer':<35} {'Wakes':<6} {'Next'}")
+        print(f"  {'-'*33:<35} {'-'*4:<6} {'-'*20}")
+        for timer in all_timers[:15]:  # Limit to 15 to avoid clutter
+            wakes = "Yes" if timer["wakes"] else "No"
+            next_time = timer["next"][:25] if len(timer["next"]) > 25 else timer["next"]
+            unit = timer["unit"][:33] if len(timer["unit"]) > 33 else timer["unit"]
+            print(f"  {unit:<35} {wakes:<6} {next_time}")
+        if len(all_timers) > 15:
+            print(f"  ... and {len(all_timers) - 15} more timers")
+
+    # RTC wake alarm
+    print("\n[RTC WAKE ALARM]")
+    print("-" * 30)
+    rtc_alarm = get_rtc_wakealarm()
+    if rtc_alarm:
+        print(f"  Scheduled wake: {rtc_alarm}")
+    else:
+        print("  No RTC wake alarm set")
+
+    # Summary
+    print("\n" + "=" * 50)
+    if wake_timers:
+        print(f"Wake timers active: {len(wake_timers)}")
+    else:
+        print("No active wake timers")
+
+
 def get_wake_source_from_dmesg():
     """Try to identify wake source from dmesg."""
     try:
@@ -873,6 +1004,8 @@ Examples:
   %(prog)s devicequery -v      Show with wakeup statistics
   %(prog)s sleepstates         Show available sleep states
   %(prog)s sleepstates -v      Show with hibernation details
+  %(prog)s waketimers          Show scheduled wake timers
+  %(prog)s waketimers -v       Show all timers with wake status
         """
     )
 
@@ -936,6 +1069,18 @@ Examples:
         help="Show additional details"
     )
     sleepstates_parser.set_defaults(func=cmd_sleepstates)
+
+    # 'waketimers' subcommand
+    waketimers_parser = subparsers.add_parser(
+        "waketimers",
+        help="Display scheduled wake timers"
+    )
+    waketimers_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show all scheduled timers, not just wake-capable ones"
+    )
+    waketimers_parser.set_defaults(func=cmd_waketimers)
 
     args = parser.parse_args()
 
