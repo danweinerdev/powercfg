@@ -663,7 +663,7 @@ def get_systemd_timers():
                         unit_idx = -2  # Second to last is usually the timer unit
 
                     # Find the timer unit name
-                    for i, part in enumerate(parts):
+                    for part in parts:
                         if part.endswith(".timer"):
                             timers.append({
                                 "next": next_time if parts[0] != "n/a" else "n/a",
@@ -767,6 +767,251 @@ def cmd_waketimers(args):
         print(f"Wake timers active: {len(wake_timers)}")
     else:
         print("No active wake timers")
+
+
+def get_power_supplies():
+    """Get power supply information."""
+    supplies = []
+    ps_path = Path("/sys/class/power_supply")
+    if ps_path.exists():
+        for supply in ps_path.iterdir():
+            try:
+                info = {"name": supply.name}
+
+                # Get type
+                type_file = supply / "type"
+                if type_file.exists():
+                    info["type"] = type_file.read_text().strip()
+
+                # Get status
+                status_file = supply / "status"
+                if status_file.exists():
+                    info["status"] = status_file.read_text().strip()
+
+                # Get capacity
+                capacity_file = supply / "capacity"
+                if capacity_file.exists():
+                    info["capacity"] = int(capacity_file.read_text().strip())
+
+                # Get capacity level
+                level_file = supply / "capacity_level"
+                if level_file.exists():
+                    info["level"] = level_file.read_text().strip()
+
+                # Get power draw (if available)
+                power_file = supply / "power_now"
+                if power_file.exists():
+                    info["power_uw"] = int(power_file.read_text().strip())
+
+                supplies.append(info)
+            except (PermissionError, OSError, ValueError):
+                pass
+    return supplies
+
+
+def get_cpu_frequency_info():
+    """Get CPU frequency and governor information."""
+    info = {}
+    cpu0_path = Path("/sys/devices/system/cpu/cpu0/cpufreq")
+
+    if cpu0_path.exists():
+        try:
+            # Scaling driver
+            driver_file = cpu0_path / "scaling_driver"
+            if driver_file.exists():
+                info["driver"] = driver_file.read_text().strip()
+
+            # Governor
+            governor_file = cpu0_path / "scaling_governor"
+            if governor_file.exists():
+                info["governor"] = governor_file.read_text().strip()
+
+            # Current frequency
+            cur_freq_file = cpu0_path / "scaling_cur_freq"
+            if cur_freq_file.exists():
+                info["cur_freq_khz"] = int(cur_freq_file.read_text().strip())
+
+            # Min/Max frequency
+            min_freq_file = cpu0_path / "scaling_min_freq"
+            max_freq_file = cpu0_path / "scaling_max_freq"
+            if min_freq_file.exists():
+                info["min_freq_khz"] = int(min_freq_file.read_text().strip())
+            if max_freq_file.exists():
+                info["max_freq_khz"] = int(max_freq_file.read_text().strip())
+
+            # Energy performance preference
+            epp_file = cpu0_path / "energy_performance_preference"
+            if epp_file.exists():
+                info["epp"] = epp_file.read_text().strip()
+
+            # Available EPP modes
+            epp_avail_file = cpu0_path / "energy_performance_available_preferences"
+            if epp_avail_file.exists():
+                info["epp_available"] = epp_avail_file.read_text().strip()
+
+        except (PermissionError, OSError, ValueError):
+            pass
+
+    # Count CPUs
+    cpu_path = Path("/sys/devices/system/cpu")
+    info["cpu_count"] = len([d for d in cpu_path.iterdir()
+                             if d.name.startswith("cpu") and d.name[3:].isdigit()])
+
+    return info
+
+
+def get_thermal_info():
+    """Get thermal zone temperatures."""
+    temps = []
+
+    # Try hwmon first for named sensors
+    hwmon_path = Path("/sys/class/hwmon")
+    if hwmon_path.exists():
+        for hwmon in hwmon_path.iterdir():
+            try:
+                name_file = hwmon / "name"
+                if name_file.exists():
+                    name = name_file.read_text().strip()
+                    # Look for k10temp (AMD), coretemp (Intel)
+                    if name in ("k10temp", "coretemp", "zenpower"):
+                        # Find temperature inputs
+                        for temp_file in hwmon.glob("temp*_input"):
+                            temp_num = temp_file.name.split('_')[0]
+                            label_file = hwmon / f"{temp_num}_label"
+                            try:
+                                temp_mc = int(temp_file.read_text().strip())
+                                label = "CPU"
+                                if label_file.exists():
+                                    label = label_file.read_text().strip()
+                                temps.append({
+                                    "label": label,
+                                    "temp_c": temp_mc / 1000.0,
+                                    "source": name
+                                })
+                            except (ValueError, OSError):
+                                pass
+            except (PermissionError, OSError):
+                pass
+
+    return temps
+
+
+def get_thermal_throttle_status():
+    """Check if CPU is being thermally throttled."""
+    throttled = False
+    throttle_count = 0
+
+    # Check package throttle count
+    cpu_path = Path("/sys/devices/system/cpu")
+    for cpu in cpu_path.iterdir():
+        if cpu.name.startswith("cpu") and cpu.name[3:].isdigit():
+            throttle_file = cpu / "thermal_throttle" / "package_throttle_count"
+            if throttle_file.exists():
+                try:
+                    count = int(throttle_file.read_text().strip())
+                    throttle_count += count
+                except (ValueError, PermissionError, OSError):
+                    pass
+
+    # Check current thermal zone status
+    thermal_path = Path("/sys/class/thermal")
+    if thermal_path.exists():
+        for zone in thermal_path.iterdir():
+            if zone.name.startswith("thermal_zone"):
+                mode_file = zone / "mode"
+                if mode_file.exists():
+                    try:
+                        mode = mode_file.read_text().strip()
+                        if mode == "disabled":
+                            throttled = True
+                    except (PermissionError, OSError):
+                        pass
+
+    return {"throttled": throttled, "throttle_count": throttle_count}
+
+
+def format_freq(khz):
+    """Format frequency in kHz to human readable."""
+    if khz >= 1000000:
+        return f"{khz / 1000000:.2f} GHz"
+    elif khz >= 1000:
+        return f"{khz / 1000:.0f} MHz"
+    return f"{khz} kHz"
+
+
+def cmd_energy(args):
+    """Handle the 'energy' command."""
+    print("ENERGY STATUS")
+    print("=" * 50)
+
+    # Power supplies
+    supplies = get_power_supplies()
+    print("\n[POWER SUPPLIES]")
+    print("-" * 30)
+    if supplies:
+        for ps in supplies:
+            status = ps.get("status", "Unknown")
+            capacity = ps.get("capacity")
+            level = ps.get("level")
+            power = ps.get("power_uw")
+
+            desc = status
+            if capacity is not None:
+                desc += f" ({capacity}%)"
+            elif level:
+                desc += f" ({level})"
+            if power:
+                power_w = power / 1000000
+                desc += f" - {power_w:.1f}W"
+
+            print(f"  {ps['name']}: {desc}")
+    else:
+        print("  No power supplies detected (desktop system)")
+
+    # CPU frequency
+    cpu_info = get_cpu_frequency_info()
+    print("\n[CPU FREQUENCY]")
+    print("-" * 30)
+    if cpu_info:
+        if "driver" in cpu_info:
+            print(f"  Driver: {cpu_info['driver']}")
+        if "governor" in cpu_info:
+            print(f"  Governor: {cpu_info['governor']}")
+        if "cur_freq_khz" in cpu_info:
+            cur = format_freq(cpu_info["cur_freq_khz"])
+            freq_range = ""
+            if "min_freq_khz" in cpu_info and "max_freq_khz" in cpu_info:
+                min_f = format_freq(cpu_info["min_freq_khz"])
+                max_f = format_freq(cpu_info["max_freq_khz"])
+                freq_range = f" (range: {min_f} - {max_f})"
+            print(f"  Current: {cur}{freq_range}")
+        if "epp" in cpu_info:
+            print(f"  Energy preference: {cpu_info['epp']}")
+            if args.verbose and "epp_available" in cpu_info:
+                print(f"    Available: {cpu_info['epp_available']}")
+        if "cpu_count" in cpu_info:
+            print(f"  CPU cores: {cpu_info['cpu_count']}")
+
+    # Temperatures
+    temps = get_thermal_info()
+    if temps:
+        print("\n[TEMPERATURES]")
+        print("-" * 30)
+        for temp in temps:
+            print(f"  {temp['label']}: {temp['temp_c']:.1f}°C")
+
+    # Thermal throttling
+    throttle = get_thermal_throttle_status()
+    print("\n[THERMAL THROTTLING]")
+    print("-" * 30)
+    if throttle["throttled"]:
+        print(f"  Status: THROTTLED")
+    else:
+        print(f"  Status: Not throttled")
+    if throttle["throttle_count"] > 0:
+        print(f"  Historical throttle events: {throttle['throttle_count']}")
+
+    print("\n" + "=" * 50)
 
 
 def get_wake_source_from_dmesg():
@@ -1006,6 +1251,8 @@ Examples:
   %(prog)s sleepstates -v      Show with hibernation details
   %(prog)s waketimers          Show scheduled wake timers
   %(prog)s waketimers -v       Show all timers with wake status
+  %(prog)s energy              Show power and thermal status
+  %(prog)s energy -v           Show with available EPP modes
         """
     )
 
@@ -1081,6 +1328,18 @@ Examples:
         help="Show all scheduled timers, not just wake-capable ones"
     )
     waketimers_parser.set_defaults(func=cmd_waketimers)
+
+    # 'energy' subcommand
+    energy_parser = subparsers.add_parser(
+        "energy",
+        help="Display energy and power status"
+    )
+    energy_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show additional details"
+    )
+    energy_parser.set_defaults(func=cmd_energy)
 
     args = parser.parse_args()
 
