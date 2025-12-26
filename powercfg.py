@@ -7,7 +7,7 @@ Shows what's preventing the system from sleeping and wake history.
 import argparse
 import subprocess
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 
@@ -58,7 +58,7 @@ def get_systemd_inhibitors():
                 parts = line.split()
                 if len(parts) >= 5:
                     who = parts[0]
-                    uid = parts[1]
+                    _uid = parts[1]
                     user = parts[2]
                     pid = parts[3]
                     comm = parts[4]
@@ -189,7 +189,7 @@ def get_active_network_connections():
         )
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
-            established = [l for l in lines if 'ESTAB' in l]
+            established = [ln for ln in lines if 'ESTAB' in ln]
             if len(established) > 5:
                 connections.append({
                     "type": "network",
@@ -629,7 +629,7 @@ def cmd_sleepstates(args):
             try:
                 image_size = int(image_size_path.read_text().strip())
                 image_size_mb = image_size // (1024 * 1024)
-                print(f"\n[HIBERNATION IMAGE]")
+                print("\n[HIBERNATION IMAGE]")
                 print("-" * 30)
                 print(f"  Max image size: {image_size_mb} MB")
             except (PermissionError, OSError, ValueError):
@@ -656,11 +656,9 @@ def get_systemd_timers():
                     # Handle "n/a" for NEXT
                     if parts[0] == "n/a":
                         next_time = "n/a"
-                        unit_idx = 2  # Skip "n/a n/a"
                     else:
                         # Try to find the .timer unit in the line
                         next_time = " ".join(parts[:4])  # Date time timezone
-                        unit_idx = -2  # Second to last is usually the timer unit
 
                     # Find the timer unit name
                     for part in parts:
@@ -1005,9 +1003,9 @@ def cmd_energy(args):
     print("\n[THERMAL THROTTLING]")
     print("-" * 30)
     if throttle["throttled"]:
-        print(f"  Status: THROTTLED")
+        print("  Status: THROTTLED")
     else:
-        print(f"  Status: Not throttled")
+        print("  Status: Not throttled")
     if throttle["throttle_count"] > 0:
         print(f"  Historical throttle events: {throttle['throttle_count']}")
 
@@ -1137,7 +1135,7 @@ def cmd_lastwake(args):
     # Recent history
     if args.history:
         history = get_sleep_history(args.history)
-        print(f"\n[RECENT SLEEP/WAKE HISTORY]")
+        print("\n[RECENT SLEEP/WAKE HISTORY]")
         print("-" * 30)
         if history:
             for event in history:
