@@ -482,6 +482,162 @@ def cmd_devicequery(args):
     print(f"Wake-enabled devices: {enabled_count} of {total_count}")
 
 
+def get_sleep_states():
+    """Get available sleep states from /sys/power/state."""
+    states = []
+    state_path = Path("/sys/power/state")
+    if state_path.exists():
+        try:
+            content = state_path.read_text().strip()
+            states = content.split()
+        except (PermissionError, OSError):
+            pass
+    return states
+
+
+def get_mem_sleep_modes():
+    """Get memory sleep modes and current selection."""
+    modes = []
+    current = None
+    mem_sleep_path = Path("/sys/power/mem_sleep")
+    if mem_sleep_path.exists():
+        try:
+            content = mem_sleep_path.read_text().strip()
+            for mode in content.split():
+                if mode.startswith("[") and mode.endswith("]"):
+                    current = mode[1:-1]
+                    modes.append(current)
+                else:
+                    modes.append(mode)
+        except (PermissionError, OSError):
+            pass
+    return modes, current
+
+
+def get_disk_modes():
+    """Get disk/hibernation modes and current selection."""
+    modes = []
+    current = None
+    disk_path = Path("/sys/power/disk")
+    if disk_path.exists():
+        try:
+            content = disk_path.read_text().strip()
+            for mode in content.split():
+                if mode.startswith("[") and mode.endswith("]"):
+                    current = mode[1:-1]
+                    modes.append(current)
+                else:
+                    modes.append(mode)
+        except (PermissionError, OSError):
+            pass
+    return modes, current
+
+
+def get_swap_info():
+    """Get swap information for hibernation viability."""
+    swaps = []
+    swap_path = Path("/proc/swaps")
+    if swap_path.exists():
+        try:
+            content = swap_path.read_text().strip()
+            lines = content.split('\n')[1:]  # Skip header
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 3:
+                    swaps.append({
+                        "device": parts[0],
+                        "type": parts[1],
+                        "size_kb": int(parts[2]),
+                    })
+        except (PermissionError, OSError, ValueError):
+            pass
+    return swaps
+
+
+def cmd_sleepstates(args):
+    """Handle the 'sleepstates' command."""
+    print("AVAILABLE SLEEP STATES")
+    print("=" * 50)
+
+    # Sleep state descriptions
+    state_desc = {
+        "freeze": ("Suspend-to-Idle", "S0ix", "Lowest latency, moderate power savings"),
+        "mem": ("Suspend-to-RAM", "S3", "Fast resume, good power savings"),
+        "disk": ("Hibernation", "S4", "Slowest resume, best power savings"),
+        "standby": ("Standby", "S1", "Light sleep, minimal savings"),
+    }
+
+    mem_mode_desc = {
+        "s2idle": "Suspend-to-Idle (software-driven)",
+        "shallow": "Shallow suspend (platform-assisted)",
+        "deep": "Suspend-to-RAM (hardware S3)",
+    }
+
+    # Available sleep states
+    states = get_sleep_states()
+    print("\n[SLEEP STATES]")
+    print("-" * 30)
+    if states:
+        for state in states:
+            if state in state_desc:
+                name, acpi, desc = state_desc[state]
+                print(f"  {state:<10} {name} ({acpi})")
+                if args.verbose:
+                    print(f"             {desc}")
+            else:
+                print(f"  {state}")
+    else:
+        print("  Unable to read sleep states")
+
+    # Memory sleep mode
+    mem_modes, mem_current = get_mem_sleep_modes()
+    print("\n[MEMORY SLEEP MODE]")
+    print("-" * 30)
+    if mem_current:
+        desc = mem_mode_desc.get(mem_current, mem_current)
+        print(f"  Current: {mem_current} - {desc}")
+    if mem_modes:
+        print(f"  Available: {', '.join(mem_modes)}")
+
+    # Hibernation/disk mode
+    disk_modes, disk_current = get_disk_modes()
+    if "disk" in states:
+        print("\n[HIBERNATION MODE]")
+        print("-" * 30)
+        if disk_current:
+            print(f"  Current: {disk_current}")
+        if disk_modes and args.verbose:
+            print(f"  Available: {', '.join(disk_modes)}")
+
+        # Check swap for hibernation viability
+        swaps = get_swap_info()
+        if swaps:
+            total_swap_mb = sum(s["size_kb"] for s in swaps) // 1024
+            print(f"  Swap: {total_swap_mb} MB available")
+            for swap in swaps:
+                size_gb = swap["size_kb"] / 1024 / 1024
+                is_zram = "zram" in swap["device"]
+                note = " (may not support hibernation)" if is_zram else ""
+                print(f"    {swap['device']}: {size_gb:.1f} GB{note}")
+        else:
+            print("  Swap: None configured (hibernation unavailable)")
+
+    # Verbose: show image size limit
+    if args.verbose:
+        image_size_path = Path("/sys/power/image_size")
+        if image_size_path.exists():
+            try:
+                image_size = int(image_size_path.read_text().strip())
+                image_size_mb = image_size // (1024 * 1024)
+                print(f"\n[HIBERNATION IMAGE]")
+                print("-" * 30)
+                print(f"  Max image size: {image_size_mb} MB")
+            except (PermissionError, OSError, ValueError):
+                pass
+
+    print("\n" + "=" * 50)
+
+
 def get_wake_source_from_dmesg():
     """Try to identify wake source from dmesg."""
     try:
@@ -715,6 +871,8 @@ Examples:
   %(prog)s lastwake -n 10      Show last 10 sleep/wake events
   %(prog)s devicequery         Show devices that can wake the system
   %(prog)s devicequery -v      Show with wakeup statistics
+  %(prog)s sleepstates         Show available sleep states
+  %(prog)s sleepstates -v      Show with hibernation details
         """
     )
 
@@ -766,6 +924,18 @@ Examples:
         help="Only show devices with wakeup enabled"
     )
     devicequery_parser.set_defaults(func=cmd_devicequery)
+
+    # 'sleepstates' subcommand
+    sleepstates_parser = subparsers.add_parser(
+        "sleepstates",
+        help="Display available sleep states and configuration"
+    )
+    sleepstates_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show additional details"
+    )
+    sleepstates_parser.set_defaults(func=cmd_sleepstates)
 
     args = parser.parse_args()
 
