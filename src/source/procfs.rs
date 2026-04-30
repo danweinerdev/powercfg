@@ -340,15 +340,20 @@ GPP8 S4
     #[test]
     fn read_acpi_wakeup_typical_fixture_tree() {
         // Exercise the committed fixture (in addition to the inline
-        // tempdir version above) to lock in the on-disk layout.
+        // tempdir version above) to lock in the on-disk layout. Assert
+        // the exact row count + first field so a fixture edit that
+        // accidentally drops or reorders a row fails the test loudly.
         let root = SysRoot::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sys-typical",
         ));
         let devices = read_acpi_wakeup(&root).expect("read fixture");
-        assert!(
-            !devices.is_empty(),
-            "sys-typical fixture should not be empty"
-        );
+        assert_eq!(devices.len(), 3, "fixture has 3 rows: GPP0, GPP8, PWRB");
+        assert_eq!(devices[0].device, "GPP0");
+        assert!(devices[0].enabled);
+        assert_eq!(devices[1].device, "GPP8");
+        assert!(!devices[1].enabled, "GPP8 marked *disabled in fixture");
+        assert_eq!(devices[2].device, "PWRB");
+        assert!(devices[2].sysfs.is_none(), "PWRB has no sysfs column");
     }
 }

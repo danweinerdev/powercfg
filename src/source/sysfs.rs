@@ -96,12 +96,10 @@ fn parse_bracketed_modes(s: &str) -> (Vec<String>, Option<String>) {
 /// column carries. Both `"pci:0000:00:01.1"` and `"0000:00:01.1"` are
 /// accepted at the public boundary so callers don't have to massage the
 /// string before passing it in.
-#[allow(dead_code)]
 fn strip_pci_prefix(addr: &str) -> &str {
     addr.strip_prefix("pci:").unwrap_or(addr)
 }
 
-#[allow(dead_code)]
 fn pci_device_dir(root: &SysRoot, addr: &str) -> PathBuf {
     let bare = strip_pci_prefix(addr);
     root.join(format!("sys/bus/pci/devices/{bare}"))
@@ -113,7 +111,6 @@ fn pci_device_dir(root: &SysRoot, addr: &str) -> PathBuf {
 /// Sourced verbatim from the Python tool's class_map (powercfg.py
 /// lines 359-372). We keep the table here rather than in a shared
 /// constants module because it's only used at this one call site.
-#[allow(dead_code)]
 fn pci_class_label(class_prefix: &str) -> Option<&'static str> {
     match class_prefix {
         "0x0c03" => Some("USB Controller"),
@@ -133,7 +130,6 @@ fn pci_class_label(class_prefix: &str) -> Option<&'static str> {
 
 /// Map a PCI vendor hex string (e.g. `"0x1022"`) to a vendor name.
 /// Mirrors the Python tool's vendor_map (powercfg.py lines 384-391).
-#[allow(dead_code)]
 fn pci_vendor_label(vendor: &str) -> Option<&'static str> {
     match vendor {
         "0x1022" => Some("AMD"),
@@ -538,5 +534,37 @@ mod tests {
         let err =
             read_pci_wakeup_stats(&root, "0000:00:01.1").expect_err("non-numeric should error");
         assert!(matches!(err, SourceError::Parse(_)));
+    }
+
+    #[test]
+    fn read_pci_descriptor_typical_fixture_tree() {
+        // Lock the committed sys-typical PCI fixture against the reader.
+        // Drift between fixture layout and parser would otherwise only
+        // surface in 2.2's integration tests.
+        let root = SysRoot::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sys-typical",
+        ));
+        // Fixture device: class 0x060400 (PCI Bridge), vendor 0x1022 (AMD).
+        let desc = read_pci_device_description(&root, "0000:00:01.1")
+            .expect("descriptor read against fixture");
+        assert_eq!(desc.as_deref(), Some("AMD PCI Bridge"));
+    }
+
+    #[test]
+    fn read_pci_wakeup_stats_typical_fixture_tree() {
+        let root = SysRoot::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sys-typical",
+        ));
+        let stats = read_pci_wakeup_stats(&root, "0000:00:01.1").expect("stats from fixture");
+        assert_eq!(
+            stats,
+            WakeupStats {
+                wakeup_count: 5,
+                wakeup_active_count: 5,
+                wakeup_last_time_ms: 12345,
+            }
+        );
     }
 }
