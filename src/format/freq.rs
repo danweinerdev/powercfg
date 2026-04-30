@@ -39,6 +39,8 @@ mod tests {
     #[test]
     fn megahertz_typical() {
         assert_eq!(format_freq(400_000), "400 MHz");
+        // 999_500..=999_999 kHz all round to "1000 MHz" under half-even
+        // rounding — intentional Python parity, not a formatter bug.
         assert_eq!(format_freq(999_999), "1000 MHz");
     }
 

@@ -40,9 +40,16 @@ impl SysRoot {
 
     /// Join a sysfs/procfs-relative path (e.g. `"sys/power/state"`) to the root.
     ///
-    /// `rel` must not start with a `/` — leading slashes would replace the
-    /// root path under `PathBuf::join` semantics, defeating the abstraction.
+    /// `rel` must be relative. Absolute paths would silently replace the root
+    /// under `PathBuf::join` semantics, defeating the abstraction and reading
+    /// the live filesystem in tests — caught here with a debug assertion so
+    /// the mistake fires loudly during `cargo test` instead of masking failures.
     pub fn join(&self, rel: impl AsRef<Path>) -> PathBuf {
+        let rel = rel.as_ref();
+        debug_assert!(
+            rel.is_relative(),
+            "SysRoot::join: rel must be relative, got {rel:?}",
+        );
         self.0.join(rel)
     }
 }
@@ -93,35 +100,59 @@ mod tests {
     }
 
     #[test]
-    fn from_env_honors_powercfg_sysroot() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var_os(SYSROOT_ENV);
-        // SAFETY: tests are serialized via ENV_LOCK; no other thread observes
-        // the env while this test runs.
-        unsafe { std::env::set_var(SYSROOT_ENV, "/tmp/fixture-root") };
-        let root = SysRoot::from_env();
-        assert_eq!(root.as_path(), Path::new("/tmp/fixture-root"));
-        // Restore prior state so the next test gets a clean slate.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(SYSROOT_ENV, v),
-                None => std::env::remove_var(SYSROOT_ENV),
+    #[should_panic(expected = "rel must be relative")]
+    fn join_panics_on_absolute_rel_in_debug() {
+        // Absolute rel paths would silently replace the root in release; the
+        // debug_assert keeps tests honest.
+        let root = SysRoot::new("/tmp/fixture");
+        let _ = root.join("/sys/power/state");
+    }
+
+    /// RAII guard that restores `POWERCFG_SYSROOT` to its prior value when
+    /// dropped — guarantees cleanup even if the test panics on assertion
+    /// failure, which a manual restore at the end of the test would miss.
+    struct EnvGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn capture() -> Self {
+            Self {
+                prev: std::env::var_os(SYSROOT_ENV),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests holding an EnvGuard also hold ENV_LOCK, so no
+            // other thread observes the env while this Drop runs.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(SYSROOT_ENV, v),
+                    None => std::env::remove_var(SYSROOT_ENV),
+                }
             }
         }
     }
 
     #[test]
+    fn from_env_honors_powercfg_sysroot() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::capture();
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe { std::env::set_var(SYSROOT_ENV, "/tmp/fixture-root") };
+        let root = SysRoot::from_env();
+        assert_eq!(root.as_path(), Path::new("/tmp/fixture-root"));
+    }
+
+    #[test]
     fn from_env_falls_back_to_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var_os(SYSROOT_ENV);
-        // SAFETY: tests are serialized via ENV_LOCK.
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::capture();
+        // SAFETY: serialized via ENV_LOCK.
         unsafe { std::env::remove_var(SYSROOT_ENV) };
         let root = SysRoot::from_env();
         assert_eq!(root.as_path(), Path::new("/"));
-        unsafe {
-            if let Some(v) = prev {
-                std::env::set_var(SYSROOT_ENV, v);
-            }
-        }
     }
 }
