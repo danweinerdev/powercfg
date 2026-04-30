@@ -4,11 +4,25 @@
 //! `Command` invocation here so a hung subprocess can't block the CLI
 //! indefinitely. The wait-timeout crate handles the kernel-level wait;
 //! callers handle the parsing.
+//!
+//! ## Pipe-buffer note
+//!
+//! Stdin is closed (`Stdio::null()`); stdout and stderr are captured.
+//! To avoid the 64 KB pipe-buffer deadlock that `Child::wait_with_output`
+//! avoids by spawning concurrent reader threads, this helper does the
+//! same: two threads drain the pipes while the foreground waits on
+//! `wait_timeout`. Without that, a child producing more than ~64 KB
+//! before exiting would block in `write()`, the pipe wouldn't drain,
+//! and the wait would hang. Phase 4's `journalctl` caller produces
+//! megabytes of output; the threaded drain is what keeps it correct.
 
-use std::process::{Command, Output};
+use std::io::Read;
+use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::time::Duration;
 
 use thiserror::Error;
+use wait_timeout::ChildExt;
 
 /// Reasons a bounded execution can fail.
 ///
@@ -45,16 +59,21 @@ pub enum ExecError {
 /// returning), `ExecError::NotFound` if the binary isn't on PATH, and
 /// `ExecError::Io` for other failures.
 ///
-/// The caller is responsible for setting up the `Command` (program,
-/// args, env). This helper sets `stdin(Stdio::null())`,
-/// `stdout(Stdio::piped())`, and `stderr(Stdio::piped())` itself.
+/// The caller supplies the `Command` (program, args, env). This helper
+/// **always overrides** stdin/stdout/stderr: stdin is `Stdio::null()`,
+/// stdout and stderr are captured via piped readers drained concurrently
+/// by background threads. Any stdio configured on `cmd` before calling
+/// is replaced.
+///
+/// On a successful run the captured stdout/stderr are returned in
+/// `Output`. On `ExecError::Timeout`, the child is killed before this
+/// function returns, but the partial pipe contents are discarded — the
+/// caller can't recover stdout written before the kill. On
+/// `ExecError::Io` from `wait_timeout`, the pipes are similarly closed
+/// without draining.
 // TODO(phase-3.3): first production caller is source::userspace::list_audio_streams.
 #[allow(dead_code)]
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, ExecError> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use wait_timeout::ChildExt;
-
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -70,33 +89,71 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, E
         Err(e) => return Err(ExecError::Io(e)),
     };
 
+    // Drain the pipes concurrently so the child can write more than
+    // 64 KB without blocking on a full pipe. Mirrors the pattern
+    // `Child::wait_with_output` uses internally.
+    let stdout_handle = child.stdout.take().map(|mut s| {
+        thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut s| {
+        thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+
     let status = match child.wait_timeout(timeout)? {
         Some(s) => s,
         None => {
-            // Timed out — kill and reap so the child doesn't outlive us.
-            // wait() always returns the status; we discard it because
-            // we already know what we want to report.
+            // Timed out — kill and reap so the child doesn't outlive
+            // us. Killing is allowed to fail (ESRCH if the child raced
+            // to exit before our check) and we drop that error
+            // silently; the wait error is logged at debug because a
+            // real wait failure would leave a zombie behind.
             let _ = child.kill();
-            let _ = child.wait();
+            if let Err(e) = child.wait() {
+                tracing::debug!("wait() after kill failed: {e}");
+            }
             return Err(ExecError::Timeout { timeout });
         }
     };
 
-    // Drain stdout/stderr that the child wrote before exiting.
-    let mut stdout_buf = Vec::new();
-    if let Some(mut s) = child.stdout.take() {
-        s.read_to_end(&mut stdout_buf)?;
-    }
-    let mut stderr_buf = Vec::new();
-    if let Some(mut s) = child.stderr.take() {
-        s.read_to_end(&mut stderr_buf)?;
-    }
+    // Join the drain threads. Either pipe absent (rare; the caller
+    // can't disable them since we set `Stdio::piped` above) or a
+    // joined panic — both folded into "no captured bytes" rather than
+    // surfacing as a function-level error.
+    let stdout_buf = join_drain(stdout_handle)?;
+    let stderr_buf = join_drain(stderr_handle)?;
 
     Ok(Output {
         status,
         stdout: stdout_buf,
         stderr: stderr_buf,
     })
+}
+
+/// Join a pipe-drain thread and unwrap its captured bytes.
+///
+/// Thread panics surface as `ExecError::Io` with a synthesized
+/// `io::ErrorKind::Other`; the actual panic payload isn't recoverable
+/// through the `JoinHandle` API.
+fn join_drain(
+    handle: Option<thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+) -> Result<Vec<u8>, ExecError> {
+    match handle {
+        Some(h) => match h.join() {
+            Ok(io_result) => Ok(io_result?),
+            Err(_) => Err(ExecError::Io(std::io::Error::other(
+                "pipe-drain thread panicked",
+            ))),
+        },
+        None => Ok(Vec::new()),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -181,5 +238,44 @@ mod tests {
         let out =
             run_with_timeout(fast, Duration::from_secs(5)).expect("subsequent echo should succeed");
         assert_eq!(out.stdout, b"after-timeout\n");
+    }
+
+    #[test]
+    fn large_stdout_does_not_deadlock() {
+        // Exercises the concurrent-drain fix. `yes hello | head -c 200000`
+        // produces 200 KB of stdout — well past the 64 KB Linux pipe
+        // buffer. Without the threaded drain, the child blocks in
+        // write() and we deadlock in wait_timeout. Use a 5s budget and
+        // assert we return well within it with the full payload.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "yes hello | head -c 200000"]);
+        let started = Instant::now();
+        let out = run_with_timeout(cmd, Duration::from_secs(5))
+            .expect("large-output run should not deadlock");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "should finish quickly, took {elapsed:?}",
+        );
+        assert_eq!(out.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn non_executable_file_returns_io() {
+        // Permission-denied on an existing file is the most reliable
+        // path to ExecError::Io across platforms. It exercises the
+        // generic `Err(e) => Io(e)` arm in `spawn()` (kind != NotFound).
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("notexec");
+        std::fs::write(&path, b"#!/bin/sh\necho noop\n").expect("write file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("set perms");
+        let cmd = Command::new(&path);
+        let err = run_with_timeout(cmd, Duration::from_secs(1))
+            .expect_err("non-executable file should fail");
+        assert!(
+            matches!(err, ExecError::Io(_)),
+            "expected ExecError::Io, got {err:?}",
+        );
     }
 }
