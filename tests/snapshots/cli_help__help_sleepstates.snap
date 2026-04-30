@@ -1,0 +1,19 @@
+---
+source: tests/cli_help.rs
+expression: stdout
+---
+Display available sleep states and configuration
+
+Usage: powercfg sleepstates [OPTIONS]
+
+Options:
+      --json
+          Emit the report as JSON instead of formatted text.
+          
+          Wired in Phase 5; subcommand handlers ignore this until then.
+
+  -v, --verbose
+          Show additional details
+
+  -h, --help
+          Print help (see a summary with '-h')

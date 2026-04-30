@@ -1,0 +1,22 @@
+---
+source: tests/cli_help.rs
+expression: stdout
+---
+Display information about the last wake event
+
+Usage: powercfg lastwake [OPTIONS]
+
+Options:
+      --json
+          Emit the report as JSON instead of formatted text.
+          
+          Wired in Phase 5; subcommand handlers ignore this until then.
+
+  -v, --verbose
+          Show additional information (ACPI devices, kernel messages)
+
+  -n, --history <N>
+          Show last N sleep/wake events
+
+  -h, --help
+          Print help (see a summary with '-h')

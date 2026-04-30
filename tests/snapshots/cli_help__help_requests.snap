@@ -1,0 +1,19 @@
+---
+source: tests/cli_help.rs
+expression: stdout
+---
+Display power requests (what's preventing sleep)
+
+Usage: powercfg requests [OPTIONS]
+
+Options:
+      --json
+          Emit the report as JSON instead of formatted text.
+          
+          Wired in Phase 5; subcommand handlers ignore this until then.
+
+  -v, --verbose
+          Show additional information
+
+  -h, --help
+          Print help (see a summary with '-h')

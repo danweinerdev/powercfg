@@ -1,0 +1,22 @@
+---
+source: tests/cli_help.rs
+expression: stdout
+---
+Display devices that can wake the system
+
+Usage: powercfg devicequery [OPTIONS]
+
+Options:
+      --json
+          Emit the report as JSON instead of formatted text.
+          
+          Wired in Phase 5; subcommand handlers ignore this until then.
+
+  -v, --verbose
+          Show wakeup statistics for devices
+
+      --enabled-only
+          Only show devices with wakeup enabled
+
+  -h, --help
+          Print help (see a summary with '-h')

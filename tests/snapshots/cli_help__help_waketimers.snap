@@ -1,0 +1,19 @@
+---
+source: tests/cli_help.rs
+expression: stdout
+---
+Display scheduled wake timers
+
+Usage: powercfg waketimers [OPTIONS]
+
+Options:
+      --json
+          Emit the report as JSON instead of formatted text.
+          
+          Wired in Phase 5; subcommand handlers ignore this until then.
+
+  -v, --verbose
+          Show all scheduled timers, not just wake-capable ones
+
+  -h, --help
+          Print help (see a summary with '-h')
