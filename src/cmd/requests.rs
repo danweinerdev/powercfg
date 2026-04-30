@@ -19,6 +19,9 @@ const VM_COMM_NAMES: &[&str] = &[
     "qemu",
     "qemu-system-x86", // truncation of qemu-system-x86_64
     "qemu-system-aar", // truncation of qemu-system-aarch64
+    "qemu-system-arm", // exact 15 chars, no truncation
+    "qemu-system-ris", // truncation of qemu-system-riscv64
+    "qemu-system-ppc", // truncation of qemu-system-ppc64
     "VBoxHeadless",
 ];
 

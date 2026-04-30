@@ -41,6 +41,11 @@ impl Inhibitor {
     /// on failure (process gone, permission denied) falls back to a
     /// copy of `who`.
     pub fn from_dbus_tuple(t: (String, String, String, String, u32, u32)) -> Self {
+        // Field order matches the live D-Bus reply, verified via
+        // `busctl call ... ListInhibitors`: four strings (what, who,
+        // why, mode) followed by uid then pid. `man systemd-inhibit`
+        // and the systemd.io docs confirm this; the earlier draft had
+        // who/why/what swapped and was caught only by live testing.
         let (what, who, why, mode, uid, pid) = t;
         let comm = resolve_comm(pid).unwrap_or_else(|| who.clone());
         Self {

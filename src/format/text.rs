@@ -647,4 +647,57 @@ mod tests {
         );
         insta::assert_snapshot!("print_requests_empty", s);
     }
+
+    /// All-non-sleep inhibitors: the section header still prints, the
+    /// display-time filter hides every entry, and the summary count
+    /// includes them all (so the "Total: 1" line still appears even
+    /// though the inhibitor section visibly shows nothing under its
+    /// header). Pins the "iterate-all-display-some" contract so a
+    /// future regression that swaps to filter-then-iterate would fail.
+    #[test]
+    fn print_requests_only_non_sleep_inhibitors_still_counts_them() {
+        let report = RequestsReport {
+            inhibitors: vec![
+                Inhibitor {
+                    what: "shutdown".into(),
+                    who: "gdm".into(),
+                    why: "Saving session state".into(),
+                    mode: "block".into(),
+                    uid: 0,
+                    pid: 999,
+                    comm: "gdm-session".into(),
+                },
+                Inhibitor {
+                    what: "handle-power-key".into(),
+                    who: "logind".into(),
+                    why: "Power key handler".into(),
+                    mode: "block".into(),
+                    uid: 0,
+                    pid: 1,
+                    comm: "systemd".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_requests(&report, false, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.contains("[SYSTEM INHIBITORS]"),
+            "header should print: {s}"
+        );
+        assert!(
+            !s.contains("Process: gdm-session"),
+            "non-sleep inhibitors must not appear in the display: {s}",
+        );
+        assert!(
+            !s.contains("Process: systemd"),
+            "non-sleep inhibitors must not appear in the display: {s}",
+        );
+        assert!(
+            s.contains("Total sleep blockers found: 2"),
+            "summary must count all inhibitors regardless of display filter: {s}",
+        );
+        insta::assert_snapshot!("print_requests_only_non_sleep", s);
+    }
 }
