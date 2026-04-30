@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use crate::model::devicequery::AcpiWakeDevice;
 use crate::paths::SysRoot;
 use crate::source::SourceError;
 
@@ -33,6 +34,93 @@ pub fn read_swaps(root: &SysRoot) -> Result<Vec<SwapDevice>, SourceError> {
     let path = root.join("proc/swaps");
     let content = fs::read_to_string(&path)?;
     Ok(parse_swaps(&content))
+}
+
+/// Read and parse `/proc/acpi/wakeup`.
+///
+/// Wraps [`parse_acpi_wakeup`]; an unreadable file (missing on systems
+/// without ACPI, permission-denied on some setups) returns
+/// `SourceError::Io`.
+// TODO(phase-2.2): wired by cmd::devicequery::run; tests reach it now,
+// the bin build doesn't until that lands.
+#[allow(dead_code)]
+pub fn read_acpi_wakeup(root: &SysRoot) -> Result<Vec<AcpiWakeDevice>, SourceError> {
+    let path = root.join("proc/acpi/wakeup");
+    let content = fs::read_to_string(&path)?;
+    parse_acpi_wakeup(&content)
+}
+
+/// Parse the textual `/proc/acpi/wakeup` format.
+///
+/// The kernel emits a single header line followed by one whitespace-
+/// separated row per wake-capable device:
+///
+/// ```text
+/// Device  S-state   Status   Sysfs node
+/// GPP0      S4    *enabled   pci:0000:00:01.1
+/// PWRB      S4    *enabled
+/// ```
+///
+/// Columns are `device`, `state`, `status`, and an optional `sysfs`
+/// node. The status column carries an optional `*` prefix indicating
+/// "currently capable of waking" — for our purposes we collapse
+/// `*enabled` and bare `enabled` into `enabled = true`, and likewise
+/// for `disabled`.
+///
+/// Behavior:
+/// - Empty input or header-only file → `Ok(vec![])`.
+/// - Rows with fewer than three columns are skipped (matches the
+///   Python `if len(parts) >= 3` guard) — this keeps the parser
+///   resilient to occasional kernel quirks rather than failing the
+///   whole report.
+/// - If the body has at least one non-blank row but none parse, return
+///   `SourceError::Parse(...)` so the caller can distinguish a
+///   genuinely broken file from "no wake devices configured".
+#[allow(dead_code)]
+fn parse_acpi_wakeup_inner(content: &str) -> (Vec<AcpiWakeDevice>, usize) {
+    // Skip the header line. `lines()` on an empty string yields zero
+    // items, so `.skip(1)` on it is still well-defined.
+    let mut body_nonblank = 0usize;
+    let devices: Vec<AcpiWakeDevice> = content
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            body_nonblank += 1;
+            let mut parts = trimmed.split_whitespace();
+            let device = parts.next()?;
+            let state = parts.next()?;
+            let status_raw = parts.next()?;
+            // The Python version does parts[3] if len(parts) > 3, so a
+            // 3-column row yields no sysfs.
+            let sysfs = parts.next().map(|s| s.to_owned());
+            // Strip a single leading `*`; the kernel never emits more
+            // than one but `trim_start_matches` is harmless if it does.
+            let status = status_raw.trim_start_matches('*');
+            let enabled = status == "enabled";
+            Some(AcpiWakeDevice {
+                device: device.to_owned(),
+                state: state.to_owned(),
+                enabled,
+                sysfs,
+            })
+        })
+        .collect();
+    (devices, body_nonblank)
+}
+
+#[allow(dead_code)]
+pub fn parse_acpi_wakeup(content: &str) -> Result<Vec<AcpiWakeDevice>, SourceError> {
+    let (devices, body_nonblank) = parse_acpi_wakeup_inner(content);
+    if devices.is_empty() && body_nonblank > 0 {
+        return Err(SourceError::Parse(format!(
+            "acpi wakeup: {body_nonblank} non-blank row(s) but none parsed"
+        )));
+    }
+    Ok(devices)
 }
 
 fn parse_swaps(content: &str) -> Vec<SwapDevice> {
@@ -135,5 +223,132 @@ mod tests {
         std::fs::write(&path, ZRAM_AND_PARTITION).expect("write");
         let swaps = read_swaps(&root).expect("read");
         assert_eq!(swaps.len(), 2);
+    }
+
+    const WAKEUP_HEADER: &str = "Device  S-state   Status   Sysfs node\n";
+
+    const WAKEUP_TYPICAL: &str = "Device  S-state   Status   Sysfs node
+GPP0      S4    *enabled   pci:0000:00:01.1
+GPP8      S4    *disabled  pci:0000:00:08.1
+PWRB      S4    *enabled
+";
+
+    #[test]
+    fn parse_acpi_wakeup_header_only_yields_empty() {
+        let devices = parse_acpi_wakeup(WAKEUP_HEADER).expect("parse");
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_completely_empty_yields_empty() {
+        let devices = parse_acpi_wakeup("").expect("parse");
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_star_enabled_and_bare_enabled_both_true() {
+        let content = "Device  S-state   Status   Sysfs node
+GPP0      S4    *enabled   pci:0000:00:01.1
+LID0      S3     enabled   platform:PNP0C0D:00
+";
+        let devices = parse_acpi_wakeup(content).expect("parse");
+        assert_eq!(devices.len(), 2);
+        assert!(devices[0].enabled, "*enabled should map to true");
+        assert!(devices[1].enabled, "bare enabled should also map to true");
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_star_disabled_is_false() {
+        let content = "Device  S-state   Status   Sysfs node
+GPP8      S4    *disabled  pci:0000:00:08.1
+";
+        let devices = parse_acpi_wakeup(content).expect("parse");
+        assert_eq!(devices.len(), 1);
+        assert!(!devices[0].enabled);
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_three_columns_has_no_sysfs() {
+        let content = "Device  S-state   Status   Sysfs node
+PWRB      S4    *enabled
+";
+        let devices = parse_acpi_wakeup(content).expect("parse");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device, "PWRB");
+        assert_eq!(devices[0].state, "S4");
+        assert!(devices[0].enabled);
+        assert_eq!(devices[0].sysfs, None);
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_typical_input_has_three_devices() {
+        let devices = parse_acpi_wakeup(WAKEUP_TYPICAL).expect("parse");
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].device, "GPP0");
+        assert_eq!(devices[0].sysfs.as_deref(), Some("pci:0000:00:01.1"));
+        assert!(devices[0].enabled);
+        assert!(!devices[1].enabled);
+        assert_eq!(devices[2].sysfs, None);
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_skips_short_rows_without_failing() {
+        // Mix of one valid row and a 2-column malformed row. Per the
+        // Python parser's `len(parts) >= 3` guard the short row should
+        // be silently dropped while the valid row is preserved.
+        let content = "Device  S-state   Status   Sysfs node
+GPP0      S4    *enabled   pci:0000:00:01.1
+SHORT     S4
+";
+        let devices = parse_acpi_wakeup(content).expect("parse");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device, "GPP0");
+    }
+
+    #[test]
+    fn parse_acpi_wakeup_all_rows_malformed_returns_parse_error() {
+        // Non-empty body where every row is too short to parse — the
+        // file is structurally broken; the caller wants to know.
+        let content = "Device  S-state   Status   Sysfs node
+GPP0
+GPP8 S4
+";
+        let err = parse_acpi_wakeup(content).expect_err("expected parse error");
+        assert!(matches!(err, SourceError::Parse(_)));
+    }
+
+    #[test]
+    fn read_acpi_wakeup_via_fixture_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let path = root.join("proc/acpi/wakeup");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, WAKEUP_TYPICAL).expect("write");
+        let devices = read_acpi_wakeup(&root).expect("read");
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].device, "GPP0");
+    }
+
+    #[test]
+    fn read_acpi_wakeup_missing_is_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let err = read_acpi_wakeup(&root).expect_err("missing file should error");
+        assert!(matches!(err, SourceError::Io(_)));
+    }
+
+    #[test]
+    fn read_acpi_wakeup_typical_fixture_tree() {
+        // Exercise the committed fixture (in addition to the inline
+        // tempdir version above) to lock in the on-disk layout.
+        let root = SysRoot::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sys-typical",
+        ));
+        let devices = read_acpi_wakeup(&root).expect("read fixture");
+        assert!(
+            !devices.is_empty(),
+            "sys-typical fixture should not be empty"
+        );
     }
 }

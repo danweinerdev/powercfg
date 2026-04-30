@@ -4,4 +4,5 @@
 //! to the formatter. Phase 5 adds `#[derive(Serialize)]` so the same
 //! structs feed `--json` output; until then they're plain owning data.
 
+pub mod devicequery;
 pub mod sleepstates;
