@@ -737,4 +737,41 @@ mod tests {
         let devices = read_usb_wakeup_devices(&root).expect("read");
         assert!(devices.is_empty());
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_usb_wakeup_devices_follows_symlinks() {
+        // Real /sys/bus/usb/devices/ has a mix of real entries and
+        // symlinks (usb1, usb2, 1-0:1.0, ...) pointing to other USB
+        // device dirs. Path::is_dir() follows symlinks, so the walker
+        // should pick up symlinked entries the same as real ones.
+        // Fixtures use real dirs only — this test covers the symlink
+        // branch explicitly so a future regression doesn't ghost it.
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+
+        // Real device at 1-2.
+        let usb_dir = tmp.path().join("sys/bus/usb/devices");
+        std::fs::create_dir_all(&usb_dir).expect("mkdir");
+        let real = usb_dir.join("1-2");
+        std::fs::create_dir_all(real.join("power")).expect("mkdir");
+        std::fs::write(real.join("power/wakeup"), "enabled\n").expect("wakeup");
+        std::fs::write(real.join("manufacturer"), "Logitech\n").expect("manuf");
+        std::fs::write(real.join("product"), "USB Receiver\n").expect("prod");
+
+        // Symlink usb1 -> 1-2 (mimicking a kernel-emitted alias).
+        symlink("1-2", usb_dir.join("usb1")).expect("symlink");
+
+        let mut devices = read_usb_wakeup_devices(&root).expect("read");
+        devices.sort_by(|a, b| a.device.cmp(&b.device));
+        assert_eq!(devices.len(), 2, "real entry plus symlink alias");
+        assert_eq!(devices[0].device, "1-2");
+        assert_eq!(devices[1].device, "usb1");
+        // Both pick up the same metadata since the symlink resolves
+        // to the same files.
+        assert_eq!(devices[0].name, "Logitech USB Receiver");
+        assert_eq!(devices[1].name, "Logitech USB Receiver");
+    }
 }

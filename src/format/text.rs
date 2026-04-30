@@ -159,11 +159,13 @@ pub fn print_sleepstates(report: &SleepStatesReport, verbose: bool) {
 
 /// Print a [`DeviceQueryReport`] in the Python tool's text format.
 ///
-/// `enabled_only` filters which ACPI rows render in the table; the
-/// summary line at the end is always computed from the unfiltered
-/// device list (matching the Python tool — when `enabled_only` is set,
-/// `devices` already only contains enabled rows so the count collapses
-/// to the same number anyway).
+/// `enabled_only` is purely a display filter on which ACPI rows render
+/// in the table. The summary footer always walks the full
+/// `report.acpi_devices` list, so the X-of-Y ratio is identical in
+/// either mode (only the rows-shown-above-the-summary change). Matches
+/// Python's behavior: in Python the `enabled_only` filter happens to
+/// also reduce `devices` so the same final count falls out, but the
+/// Rust code reaches that result by always walking the unfiltered list.
 ///
 /// `verbose` adds a `Wake count: N` line under each ACPI row whose PCI
 /// `wakeup_count` is non-zero. Stats failures and zero counts are
