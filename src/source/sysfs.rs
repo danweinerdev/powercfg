@@ -10,6 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::model::devicequery::{UsbWakeDevice, WakeupStats};
+use crate::model::energy::{CpuFreqInfo, PowerSupply, ThermalReading, ThrottleStatus};
 use crate::paths::SysRoot;
 use crate::source::SourceError;
 
@@ -311,6 +312,301 @@ pub fn read_usb_wakeup_devices(root: &SysRoot) -> Result<Vec<UsbWakeDevice>, Sou
         });
     }
     Ok(devices)
+}
+
+/// Walk `<root>/sys/class/power_supply/` and collect one [`PowerSupply`]
+/// per direntry.
+///
+/// Reads the per-supply files independently — any single missing/unreadable
+/// file folds into the corresponding `Option` field as `None` rather than
+/// aborting the row. The Python tool does the same with a per-supply
+/// `try/except: pass`.
+///
+/// `capacity_pct` parses the file as `u8`; values outside `0..=100` (or
+/// non-numeric content) yield `None` for that field. `power_uw` parses as
+/// `u64` with the same skip-on-error behavior.
+///
+/// If the parent `/sys/class/power_supply/` directory does not exist
+/// (headless desktop), returns `Ok(vec![])` — matches Python line 774's
+/// `if ps_path.exists():` guard. If the directory exists but `read_dir`
+/// fails (permission denied, transient errors), the error propagates.
+// TODO(phase-2.4): wired by cmd::energy::run.
+#[allow(dead_code)]
+pub fn read_power_supplies(root: &SysRoot) -> Result<Vec<PowerSupply>, SourceError> {
+    let parent = root.join("sys/class/power_supply");
+    if !parent.exists() {
+        return Ok(vec![]);
+    }
+    let entries = fs::read_dir(&parent)?;
+    // Sort by directory name for deterministic output across runs.
+    let mut dir_names: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .collect();
+    dir_names.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut supplies = Vec::with_capacity(dir_names.len());
+    for (name, path) in dir_names {
+        let kind = read_trimmed(&path, "type");
+        let status = read_trimmed(&path, "status");
+        let capacity_pct = read_trimmed(&path, "capacity").and_then(|s| s.parse::<u8>().ok());
+        let level = read_trimmed(&path, "capacity_level");
+        let power_uw = read_trimmed(&path, "power_now").and_then(|s| s.parse::<u64>().ok());
+        supplies.push(PowerSupply {
+            name,
+            kind,
+            status,
+            capacity_pct,
+            level,
+            power_uw,
+        });
+    }
+    Ok(supplies)
+}
+
+/// Read CPU frequency / governor / EPP info from `cpu0/cpufreq` and count
+/// CPUs by counting `cpuN` direntries under `/sys/devices/system/cpu/`.
+///
+/// All field reads are independent — a missing `scaling_cur_freq` doesn't
+/// suppress `scaling_driver`. Non-numeric content in the freq files folds
+/// into `None` for that field rather than erroring.
+///
+/// Returns `Ok(CpuFreqInfo::default())` when the parent
+/// `/sys/devices/system/cpu/` directory itself doesn't exist (some test
+/// fixtures don't carry it). When that parent exists but
+/// `cpu0/cpufreq/` doesn't (e.g. kernels built without cpufreq), returns
+/// a `CpuFreqInfo` with every field None except `cpu_count` — the count
+/// is still meaningful.
+///
+/// `cpu_count` matches the Python tool's `d.name.startswith("cpu") and
+/// d.name[3:].isdigit()` filter (regex-free).
+// TODO(phase-2.4): wired by cmd::energy::run.
+#[allow(dead_code)]
+pub fn read_cpu_freq_info(root: &SysRoot) -> Result<CpuFreqInfo, SourceError> {
+    let cpu_root = root.join("sys/devices/system/cpu");
+    if !cpu_root.exists() {
+        return Ok(CpuFreqInfo::default());
+    }
+
+    let mut info = CpuFreqInfo::default();
+
+    // Per-CPU fields from cpu0/cpufreq. Missing-dir is a no-op (info stays
+    // empty); a real I/O failure during read is folded into None per-field.
+    let cpu0_freq = cpu_root.join("cpu0/cpufreq");
+    if cpu0_freq.exists() {
+        info.driver = read_trimmed(&cpu0_freq, "scaling_driver");
+        info.governor = read_trimmed(&cpu0_freq, "scaling_governor");
+        info.cur_freq_khz =
+            read_trimmed(&cpu0_freq, "scaling_cur_freq").and_then(|s| s.parse::<u64>().ok());
+        info.min_freq_khz =
+            read_trimmed(&cpu0_freq, "scaling_min_freq").and_then(|s| s.parse::<u64>().ok());
+        info.max_freq_khz =
+            read_trimmed(&cpu0_freq, "scaling_max_freq").and_then(|s| s.parse::<u64>().ok());
+        info.epp = read_trimmed(&cpu0_freq, "energy_performance_preference");
+        info.epp_available = read_trimmed(&cpu0_freq, "energy_performance_available_preferences");
+    }
+
+    // Count cpuN direntries (regex-free).
+    info.cpu_count = match fs::read_dir(&cpu_root) {
+        Ok(iter) => iter
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("cpu")
+                    && name.len() > 3
+                    && name[3..].chars().all(|c| c.is_ascii_digit())
+            })
+            .count(),
+        Err(_) => 0,
+    };
+
+    Ok(info)
+}
+
+/// Walk `<root>/sys/class/hwmon/` and collect [`ThermalReading`]s for the
+/// CPU-thermal chips Python's `get_thermal_info` knows about: `k10temp`,
+/// `coretemp`, `zenpower`. Other hwmon entries (NVMe, fans, GPU sensors)
+/// are silently skipped so the section stays focused on CPU thermals.
+///
+/// For each matching chip, every `tempN_input` file is read as
+/// millidegrees Celsius, divided by 1000 for the float result, and paired
+/// with the chip's `tempN_label` if present. When the label file is
+/// absent (which happens in practice for some inputs on some kernels),
+/// the label falls back to the literal `"CPU"` — matches Python line 881.
+///
+/// Per-chip and per-temp read errors are tolerated (logged at debug,
+/// reading continues). Missing parent → `Ok(vec![])` (Python line 868).
+// TODO(phase-2.4): wired by cmd::energy::run.
+#[allow(dead_code)]
+pub fn read_thermal_info(root: &SysRoot) -> Result<Vec<ThermalReading>, SourceError> {
+    let parent = root.join("sys/class/hwmon");
+    if !parent.exists() {
+        return Ok(vec![]);
+    }
+    let entries = fs::read_dir(&parent)?;
+    // Sort by hwmonN name for deterministic output.
+    let mut chips: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .collect();
+    chips.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut readings = Vec::new();
+    for (chip_name, chip_path) in chips {
+        if !chip_path.is_dir() {
+            continue;
+        }
+        let name = match read_trimmed(&chip_path, "name") {
+            Some(n) => n,
+            None => {
+                tracing::debug!("hwmon {chip_name}: missing name file, skipping");
+                continue;
+            }
+        };
+        if !matches!(name.as_str(), "k10temp" | "coretemp" | "zenpower") {
+            continue;
+        }
+
+        // Find every tempN_input. read_dir order is filesystem-dependent;
+        // sort by filename so callers see a stable ordering.
+        let mut inputs: Vec<(String, PathBuf)> = match fs::read_dir(&chip_path) {
+            Ok(iter) => iter
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let fname = e.file_name().to_string_lossy().into_owned();
+                    if fname.starts_with("temp") && fname.ends_with("_input") {
+                        Some((fname, e.path()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                tracing::debug!("hwmon {chip_name} read_dir: {e}");
+                continue;
+            }
+        };
+        inputs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (fname, input_path) in inputs {
+            // "temp1_input" → "temp1".
+            let temp_num = match fname.strip_suffix("_input") {
+                Some(n) => n,
+                None => continue, // shouldn't happen given the filter above
+            };
+            let mc_text = match fs::read_to_string(&input_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!("hwmon {chip_name}/{fname}: {e}");
+                    continue;
+                }
+            };
+            let mc: i64 = match mc_text.trim().parse() {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::debug!("hwmon {chip_name}/{fname}: non-numeric ({e}), skipping",);
+                    continue;
+                }
+            };
+            let label = read_trimmed(&chip_path, &format!("{temp_num}_label"))
+                .unwrap_or_else(|| "CPU".to_owned());
+            readings.push(ThermalReading {
+                label,
+                temp_c: mc as f64 / 1000.0,
+                source: name.clone(),
+            });
+        }
+    }
+    Ok(readings)
+}
+
+/// Aggregate CPU throttle data from two independent walks:
+///
+/// 1. **Throttle count** — sum the integer contents of every
+///    `<root>/sys/devices/system/cpu/cpuN/thermal_throttle/package_throttle_count`
+///    file. Per-CPU read or parse failures are skipped silently (logged at
+///    debug); they don't poison the running total.
+/// 2. **Throttled-now flag** — if any
+///    `<root>/sys/class/thermal/thermal_zone*/mode` reads as exactly
+///    `"disabled"`, the flag is set. Per-zone read failures don't flip
+///    the flag.
+///
+/// Both walks tolerate a missing parent directory (zero contribution).
+/// The function as a whole returns `Ok(ThrottleStatus { … })` even when
+/// every individual read failed — `Default` is the zero state and we
+/// don't want a healthy box without these counters to look like an error.
+// TODO(phase-2.4): wired by cmd::energy::run.
+#[allow(dead_code)]
+pub fn read_throttle_status(root: &SysRoot) -> Result<ThrottleStatus, SourceError> {
+    let mut status = ThrottleStatus::default();
+
+    // 1. package_throttle_count summation.
+    let cpu_root = root.join("sys/devices/system/cpu");
+    if cpu_root.exists() {
+        if let Ok(iter) = fs::read_dir(&cpu_root) {
+            for entry in iter.filter_map(|e| e.ok()) {
+                let fname = entry.file_name();
+                let fname = fname.to_string_lossy();
+                if !(fname.starts_with("cpu")
+                    && fname.len() > 3
+                    && fname[3..].chars().all(|c| c.is_ascii_digit()))
+                {
+                    continue;
+                }
+                let path = entry.path().join("thermal_throttle/package_throttle_count");
+                let text = match fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!("{fname} package_throttle_count: {e}");
+                        continue;
+                    }
+                };
+                match text.trim().parse::<u64>() {
+                    Ok(n) => status.throttle_count = status.throttle_count.saturating_add(n),
+                    Err(e) => {
+                        tracing::debug!("{fname} package_throttle_count parse: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. thermal_zone*/mode == "disabled" check.
+    let thermal_root = root.join("sys/class/thermal");
+    if thermal_root.exists() {
+        if let Ok(iter) = fs::read_dir(&thermal_root) {
+            for entry in iter.filter_map(|e| e.ok()) {
+                let fname = entry.file_name();
+                let fname = fname.to_string_lossy();
+                if !fname.starts_with("thermal_zone") {
+                    continue;
+                }
+                let mode_path = entry.path().join("mode");
+                match fs::read_to_string(&mode_path) {
+                    Ok(s) if s.trim() == "disabled" => {
+                        status.throttled = true;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!("{fname}/mode: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(status)
+}
+
+/// Helper: read `dir/name` and return the trimmed contents as `Some` on
+/// success, `None` on any I/O failure. Used by the per-field readers in
+/// the new sources where a missing file is "no value here" rather than
+/// an error.
+fn read_trimmed(dir: &std::path::Path, name: &str) -> Option<String> {
+    fs::read_to_string(dir.join(name))
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 #[cfg(test)]
@@ -773,5 +1069,442 @@ mod tests {
         // to the same files.
         assert_eq!(devices[0].name, "Logitech USB Receiver");
         assert_eq!(devices[1].name, "Logitech USB Receiver");
+    }
+
+    // ----------------------------------------------------------------
+    // read_power_supplies
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn read_power_supplies_typical_ac_and_battery() {
+        // Two supplies: AC adapter (no capacity) and battery (full data).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/power_supply/AC/type", "Mains\n");
+        write_fixture(&root, "sys/class/power_supply/AC/status", "Discharging\n");
+        write_fixture(&root, "sys/class/power_supply/BAT0/type", "Battery\n");
+        write_fixture(&root, "sys/class/power_supply/BAT0/status", "Discharging\n");
+        write_fixture(&root, "sys/class/power_supply/BAT0/capacity", "87\n");
+        write_fixture(
+            &root,
+            "sys/class/power_supply/BAT0/capacity_level",
+            "Normal\n",
+        );
+
+        let supplies = read_power_supplies(&root).expect("read");
+        // Sorted alphabetically: AC, BAT0.
+        assert_eq!(supplies.len(), 2);
+        assert_eq!(supplies[0].name, "AC");
+        assert_eq!(supplies[0].kind.as_deref(), Some("Mains"));
+        assert_eq!(supplies[0].status.as_deref(), Some("Discharging"));
+        assert_eq!(supplies[0].capacity_pct, None);
+        assert_eq!(supplies[0].level, None);
+        assert_eq!(supplies[0].power_uw, None);
+
+        assert_eq!(supplies[1].name, "BAT0");
+        assert_eq!(supplies[1].kind.as_deref(), Some("Battery"));
+        assert_eq!(supplies[1].status.as_deref(), Some("Discharging"));
+        assert_eq!(supplies[1].capacity_pct, Some(87));
+        assert_eq!(supplies[1].level.as_deref(), Some("Normal"));
+        assert_eq!(supplies[1].power_uw, None);
+    }
+
+    #[test]
+    fn read_power_supplies_battery_with_power_now() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/power_supply/BAT0/type", "Battery\n");
+        write_fixture(&root, "sys/class/power_supply/BAT0/power_now", "12500000\n");
+
+        let supplies = read_power_supplies(&root).expect("read");
+        assert_eq!(supplies.len(), 1);
+        assert_eq!(supplies[0].power_uw, Some(12_500_000));
+    }
+
+    #[test]
+    fn read_power_supplies_missing_parent_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let supplies = read_power_supplies(&root).expect("read");
+        assert!(supplies.is_empty());
+    }
+
+    #[test]
+    fn read_power_supplies_empty_parent_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Lay down the parent dir but no children — read_dir succeeds and
+        // yields nothing.
+        fs::create_dir_all(root.join("sys/class/power_supply")).expect("mkdir");
+        let supplies = read_power_supplies(&root).expect("read");
+        assert!(supplies.is_empty());
+    }
+
+    #[test]
+    fn read_power_supplies_capacity_out_of_range_drops_field() {
+        // Capacity of 200 doesn't fit u8 ≤ 100 conceptually, but u8::parse
+        // accepts up to 255. The value 257 is out of u8 range and parse()
+        // returns Err — we want None on the row, not a panic.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/power_supply/BAT0/type", "Battery\n");
+        write_fixture(&root, "sys/class/power_supply/BAT0/capacity", "257\n");
+
+        let supplies = read_power_supplies(&root).expect("read");
+        assert_eq!(supplies.len(), 1);
+        assert_eq!(supplies[0].capacity_pct, None);
+    }
+
+    #[test]
+    fn read_power_supplies_garbage_power_now_drops_field() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/power_supply/BAT0/type", "Battery\n");
+        write_fixture(
+            &root,
+            "sys/class/power_supply/BAT0/power_now",
+            "not-a-number\n",
+        );
+
+        let supplies = read_power_supplies(&root).expect("read");
+        assert_eq!(supplies.len(), 1);
+        assert_eq!(supplies[0].power_uw, None);
+    }
+
+    // ----------------------------------------------------------------
+    // read_cpu_freq_info
+    // ----------------------------------------------------------------
+
+    /// Helper for the cpufreq tests: lay down a populated `cpu0/cpufreq`
+    /// tree under the given root.
+    fn write_full_cpufreq(root: &SysRoot) {
+        let base = "sys/devices/system/cpu/cpu0/cpufreq";
+        write_fixture(root, &format!("{base}/scaling_driver"), "amd-pstate-epp\n");
+        write_fixture(root, &format!("{base}/scaling_governor"), "powersave\n");
+        write_fixture(root, &format!("{base}/scaling_cur_freq"), "3400000\n");
+        write_fixture(root, &format!("{base}/scaling_min_freq"), "400000\n");
+        write_fixture(root, &format!("{base}/scaling_max_freq"), "4800000\n");
+        write_fixture(
+            root,
+            &format!("{base}/energy_performance_preference"),
+            "balance_performance\n",
+        );
+        write_fixture(
+            root,
+            &format!("{base}/energy_performance_available_preferences"),
+            "default performance balance_performance balance_power power\n",
+        );
+    }
+
+    #[test]
+    fn read_cpu_freq_info_full_fixture() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_full_cpufreq(&root);
+        // 16 cpuN dirs (cpu0..cpu15). cpu0 already exists from the cpufreq
+        // tree above.
+        for n in 1..16 {
+            fs::create_dir_all(root.join(format!("sys/devices/system/cpu/cpu{n}")))
+                .expect("mkdir cpuN");
+        }
+
+        let info = read_cpu_freq_info(&root).expect("read");
+        assert_eq!(info.driver.as_deref(), Some("amd-pstate-epp"));
+        assert_eq!(info.governor.as_deref(), Some("powersave"));
+        assert_eq!(info.cur_freq_khz, Some(3_400_000));
+        assert_eq!(info.min_freq_khz, Some(400_000));
+        assert_eq!(info.max_freq_khz, Some(4_800_000));
+        assert_eq!(info.epp.as_deref(), Some("balance_performance"));
+        assert_eq!(
+            info.epp_available.as_deref(),
+            Some("default performance balance_performance balance_power power"),
+        );
+        assert_eq!(info.cpu_count, 16);
+    }
+
+    #[test]
+    fn read_cpu_freq_info_only_driver_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu0/cpufreq/scaling_driver",
+            "intel_pstate\n",
+        );
+
+        let info = read_cpu_freq_info(&root).expect("read");
+        assert_eq!(info.driver.as_deref(), Some("intel_pstate"));
+        assert_eq!(info.governor, None);
+        assert_eq!(info.cur_freq_khz, None);
+        assert_eq!(info.epp, None);
+        assert_eq!(info.cpu_count, 1, "cpu0 dir alone");
+    }
+
+    #[test]
+    fn read_cpu_freq_info_no_cpufreq_dir_but_cpus_exist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // 4 cpuN dirs but no cpufreq subdir.
+        for n in 0..4 {
+            fs::create_dir_all(root.join(format!("sys/devices/system/cpu/cpu{n}")))
+                .expect("mkdir cpuN");
+        }
+        let info = read_cpu_freq_info(&root).expect("read");
+        assert_eq!(info.driver, None);
+        assert_eq!(info.governor, None);
+        assert_eq!(info.cpu_count, 4);
+    }
+
+    #[test]
+    fn read_cpu_freq_info_missing_parent_is_default() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let info = read_cpu_freq_info(&root).expect("read");
+        assert_eq!(info.driver, None);
+        assert_eq!(info.cpu_count, 0);
+    }
+
+    #[test]
+    fn read_cpu_freq_info_garbage_freq_is_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            "not-a-number\n",
+        );
+        let info = read_cpu_freq_info(&root).expect("read");
+        // The driver is missing, the bad freq folds to None — but cur_freq
+        // doesn't flip the function to Err.
+        assert_eq!(info.cur_freq_khz, None);
+    }
+
+    #[test]
+    fn read_cpu_freq_info_ignores_non_cpu_dirs() {
+        // /sys/devices/system/cpu has a bunch of non-cpuN siblings on a
+        // real kernel: cpufreq, cpuidle, hotplug, isolated, kernel_max,
+        // present, online, possible, …
+        // The cpu_count walk should ignore them (only `cpu` + digits count).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        for n in 0..2 {
+            fs::create_dir_all(root.join(format!("sys/devices/system/cpu/cpu{n}")))
+                .expect("mkdir cpuN");
+        }
+        // Distractors:
+        fs::create_dir_all(root.join("sys/devices/system/cpu/cpufreq")).expect("mkdir");
+        fs::create_dir_all(root.join("sys/devices/system/cpu/cpuidle")).expect("mkdir");
+        fs::write(root.join("sys/devices/system/cpu/online"), "0-1\n").expect("file");
+        fs::write(root.join("sys/devices/system/cpu/cpubogus"), "x\n").expect("file");
+
+        let info = read_cpu_freq_info(&root).expect("read");
+        assert_eq!(info.cpu_count, 2);
+    }
+
+    // ----------------------------------------------------------------
+    // read_thermal_info
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn read_thermal_info_k10temp_two_inputs_label_fallback() {
+        // hwmon0: k10temp with temp1_input + temp1_label, and temp2_input
+        // (no label — exercises the "CPU" fallback).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let base = "sys/class/hwmon/hwmon0";
+        write_fixture(&root, &format!("{base}/name"), "k10temp\n");
+        write_fixture(&root, &format!("{base}/temp1_input"), "52400\n");
+        write_fixture(&root, &format!("{base}/temp1_label"), "Tctl\n");
+        write_fixture(&root, &format!("{base}/temp2_input"), "50100\n");
+
+        let readings = read_thermal_info(&root).expect("read");
+        assert_eq!(readings.len(), 2);
+        assert_eq!(readings[0].label, "Tctl");
+        assert!((readings[0].temp_c - 52.4).abs() < 1e-9);
+        assert_eq!(readings[0].source, "k10temp");
+        // temp2 falls back to "CPU".
+        assert_eq!(readings[1].label, "CPU");
+        assert!((readings[1].temp_c - 50.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn read_thermal_info_filters_unrelated_chips() {
+        // hwmon0: nvme0 (skipped), hwmon1: k10temp (kept).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/hwmon/hwmon0/name", "nvme0\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon0/temp1_input", "35000\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon1/name", "k10temp\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon1/temp1_input", "55000\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon1/temp1_label", "Tctl\n");
+
+        let readings = read_thermal_info(&root).expect("read");
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].source, "k10temp");
+        assert_eq!(readings[0].label, "Tctl");
+    }
+
+    #[test]
+    fn read_thermal_info_missing_parent_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let readings = read_thermal_info(&root).expect("read");
+        assert!(readings.is_empty());
+    }
+
+    #[test]
+    fn read_thermal_info_non_numeric_temp_skipped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/hwmon/hwmon0/name", "k10temp\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon0/temp1_input", "garbage\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon0/temp2_input", "60000\n");
+
+        let readings = read_thermal_info(&root).expect("read");
+        // temp1 skipped (non-numeric), temp2 kept.
+        assert_eq!(readings.len(), 1);
+        assert!((readings[0].temp_c - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn read_thermal_info_chip_with_no_name_skipped() {
+        // hwmon0 has no `name` file at all — Python's `if name_file.exists()`
+        // skips it; we match that behavior.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/hwmon/hwmon0/temp1_input", "50000\n");
+
+        let readings = read_thermal_info(&root).expect("read");
+        assert!(readings.is_empty());
+    }
+
+    #[test]
+    fn read_thermal_info_coretemp_and_zenpower_match() {
+        // Both are accepted alongside k10temp.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/hwmon/hwmon0/name", "coretemp\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon0/temp1_input", "45000\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon1/name", "zenpower\n");
+        write_fixture(&root, "sys/class/hwmon/hwmon1/temp1_input", "48000\n");
+
+        let readings = read_thermal_info(&root).expect("read");
+        assert_eq!(readings.len(), 2);
+        assert_eq!(readings[0].source, "coretemp");
+        assert_eq!(readings[1].source, "zenpower");
+    }
+
+    // ----------------------------------------------------------------
+    // read_throttle_status
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn read_throttle_status_sums_per_cpu_counts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count",
+            "5\n",
+        );
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu1/thermal_throttle/package_throttle_count",
+            "5\n",
+        );
+
+        let status = read_throttle_status(&root).expect("read");
+        assert_eq!(status.throttle_count, 10);
+        assert!(!status.throttled);
+    }
+
+    #[test]
+    fn read_throttle_status_disabled_zone_sets_flag() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "disabled\n");
+
+        let status = read_throttle_status(&root).expect("read");
+        assert!(status.throttled);
+        assert_eq!(status.throttle_count, 0);
+    }
+
+    #[test]
+    fn read_throttle_status_all_enabled_zones_no_flag() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "enabled\n");
+        write_fixture(&root, "sys/class/thermal/thermal_zone1/mode", "enabled\n");
+
+        let status = read_throttle_status(&root).expect("read");
+        assert!(!status.throttled);
+    }
+
+    #[test]
+    fn read_throttle_status_no_zones_no_flag() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Empty thermal dir present but no thermal_zone* children.
+        fs::create_dir_all(root.join("sys/class/thermal")).expect("mkdir");
+
+        let status = read_throttle_status(&root).expect("read");
+        assert!(!status.throttled);
+    }
+
+    #[test]
+    fn read_throttle_status_missing_parents_returns_default() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let status = read_throttle_status(&root).expect("read");
+        assert_eq!(status, ThrottleStatus::default());
+    }
+
+    #[test]
+    fn read_throttle_status_partial_per_cpu_files() {
+        // Two cpu dirs but only cpu0 has a readable count file — the sum
+        // should be cpu0's contribution alone.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count",
+            "7\n",
+        );
+        // cpu1 exists but with no throttle file.
+        fs::create_dir_all(root.join("sys/devices/system/cpu/cpu1")).expect("mkdir");
+
+        let status = read_throttle_status(&root).expect("read");
+        assert_eq!(status.throttle_count, 7);
+    }
+
+    #[test]
+    fn read_throttle_status_garbage_count_skipped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count",
+            "not-a-number\n",
+        );
+        write_fixture(
+            &root,
+            "sys/devices/system/cpu/cpu1/thermal_throttle/package_throttle_count",
+            "3\n",
+        );
+        let status = read_throttle_status(&root).expect("read");
+        assert_eq!(status.throttle_count, 3);
+    }
+
+    #[test]
+    fn read_throttle_status_mixed_zones_one_disabled() {
+        // Multiple zones, only one disabled — flag still flips.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "enabled\n");
+        write_fixture(&root, "sys/class/thermal/thermal_zone1/mode", "disabled\n");
+        write_fixture(&root, "sys/class/thermal/thermal_zone2/mode", "enabled\n");
+
+        let status = read_throttle_status(&root).expect("read");
+        assert!(status.throttled);
     }
 }

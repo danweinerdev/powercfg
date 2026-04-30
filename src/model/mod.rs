@@ -5,4 +5,5 @@
 //! structs feed `--json` output; until then they're plain owning data.
 
 pub mod devicequery;
+pub mod energy;
 pub mod sleepstates;
