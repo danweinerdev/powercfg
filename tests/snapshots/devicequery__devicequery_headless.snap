@@ -1,0 +1,15 @@
+---
+source: tests/devicequery.rs
+expression: out
+---
+WAKE-CAPABLE DEVICES
+==================================================
+
+[ACPI WAKE DEVICES]
+------------------------------
+  Device   State  Status     Description
+  ------   -----  --------   --------------------
+  PWRB     S4     enabled    
+
+==================================================
+Wake-enabled devices: 1 of 1

@@ -34,6 +34,7 @@ fn main() -> std::process::ExitCode {
         } => cmd::devicequery::run(cmd::devicequery::Args {
             verbose,
             enabled_only,
+            root: SysRoot::from_env(),
         }),
         cli::Command::Sleepstates { verbose } => cmd::sleepstates::run(cmd::sleepstates::Args {
             verbose,

@@ -41,9 +41,6 @@ pub fn read_swaps(root: &SysRoot) -> Result<Vec<SwapDevice>, SourceError> {
 /// Wraps [`parse_acpi_wakeup`]; an unreadable file (missing on systems
 /// without ACPI, permission-denied on some setups) returns
 /// `SourceError::Io`.
-// TODO(phase-2.2): wired by cmd::devicequery::run; tests reach it now,
-// the bin build doesn't until that lands.
-#[allow(dead_code)]
 pub fn read_acpi_wakeup(root: &SysRoot) -> Result<Vec<AcpiWakeDevice>, SourceError> {
     let path = root.join("proc/acpi/wakeup");
     let content = fs::read_to_string(&path)?;
@@ -76,7 +73,6 @@ pub fn read_acpi_wakeup(root: &SysRoot) -> Result<Vec<AcpiWakeDevice>, SourceErr
 /// - If the body has at least one non-blank row but none parse, return
 ///   `SourceError::Parse(...)` so the caller can distinguish a
 ///   genuinely broken file from "no wake devices configured".
-#[allow(dead_code)]
 fn parse_acpi_wakeup_inner(content: &str) -> (Vec<AcpiWakeDevice>, usize) {
     // Skip the header line. `lines()` on an empty string yields zero
     // items, so `.skip(1)` on it is still well-defined.
@@ -112,7 +108,6 @@ fn parse_acpi_wakeup_inner(content: &str) -> (Vec<AcpiWakeDevice>, usize) {
     (devices, body_nonblank)
 }
 
-#[allow(dead_code)]
 pub fn parse_acpi_wakeup(content: &str) -> Result<Vec<AcpiWakeDevice>, SourceError> {
     let (devices, body_nonblank) = parse_acpi_wakeup_inner(content);
     if devices.is_empty() && body_nonblank > 0 {

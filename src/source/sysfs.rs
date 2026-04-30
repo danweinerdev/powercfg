@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::model::devicequery::WakeupStats;
+use crate::model::devicequery::{UsbWakeDevice, WakeupStats};
 use crate::paths::SysRoot;
 use crate::source::SourceError;
 
@@ -160,8 +160,6 @@ fn pci_vendor_label(vendor: &str) -> Option<&'static str> {
 /// Composition rule: if both vendor and class match, the result is
 /// `"<Vendor> <Class>"` (vendor prepended). If only one matches, that
 /// label is returned alone. Neither matching → `Ok(None)`.
-// TODO(phase-2.2): wired by cmd::devicequery::run.
-#[allow(dead_code)]
 pub fn read_pci_device_description(
     root: &SysRoot,
     addr: &str,
@@ -218,8 +216,6 @@ pub fn read_pci_device_description(
 ///
 /// `addr` accepts the same `pci:`-prefixed and bare forms as
 /// [`read_pci_device_description`].
-// TODO(phase-2.2): wired by cmd::devicequery::run.
-#[allow(dead_code)]
 pub fn read_pci_wakeup_stats(root: &SysRoot, addr: &str) -> Result<WakeupStats, SourceError> {
     let dir = pci_device_dir(root, addr).join("power");
     let wakeup_count = read_u64_file(&dir, "wakeup_count")?;
@@ -232,7 +228,6 @@ pub fn read_pci_wakeup_stats(root: &SysRoot, addr: &str) -> Result<WakeupStats, 
     })
 }
 
-#[allow(dead_code)]
 fn read_u64_file(dir: &std::path::Path, name: &str) -> Result<u64, SourceError> {
     let path = dir.join(name);
     let content = fs::read_to_string(&path)?;
@@ -240,6 +235,82 @@ fn read_u64_file(dir: &std::path::Path, name: &str) -> Result<u64, SourceError> 
     trimmed
         .parse::<u64>()
         .map_err(|e| SourceError::Parse(format!("{name}: {e} (input: {trimmed:?})")))
+}
+
+/// Walk `<root>/sys/bus/usb/devices/` and collect USB devices that have
+/// `power/wakeup == "enabled"`.
+///
+/// For each direntry that is a directory and has a `power/wakeup` file:
+/// - Skip unless trimmed content is `"enabled"`.
+/// - Read `manufacturer` and `product` if present (each may be missing).
+/// - Display name = `format!("{manufacturer} {product}").trim()`. If
+///   that ends up empty, fall back to the directory name (e.g. `"1-2"`).
+///
+/// Per-device read errors (permission denied, missing files) are
+/// silently skipped with a `tracing::debug!` so they surface under
+/// `RUST_LOG=debug` without breaking the report. Only failure to
+/// enumerate the parent `usb/devices` directory raises
+/// `Err(SourceError::Io)`.
+///
+/// If the parent directory doesn't exist (headless / no USB bus), this
+/// returns `Ok(vec![])` — matches Python's `if usb_path.exists():`
+/// guard at line 148, where a missing path is "no USB devices" rather
+/// than an error.
+pub fn read_usb_wakeup_devices(root: &SysRoot) -> Result<Vec<UsbWakeDevice>, SourceError> {
+    let parent = root.join("sys/bus/usb/devices");
+    if !parent.exists() {
+        return Ok(vec![]);
+    }
+    let mut devices = Vec::new();
+    let entries = fs::read_dir(&parent)?;
+    // Sort by directory name for deterministic output (read_dir order
+    // is filesystem-dependent and would make snapshots flaky).
+    let mut dir_names: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            (name, path)
+        })
+        .collect();
+    dir_names.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, path) in dir_names {
+        if !path.is_dir() {
+            continue;
+        }
+        let wakeup_file = path.join("power/wakeup");
+        let status = match fs::read_to_string(&wakeup_file) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!("usb device {name}: {e}");
+                continue;
+            }
+        };
+        if status.trim() != "enabled" {
+            continue;
+        }
+
+        let manufacturer = fs::read_to_string(path.join("manufacturer"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let product = fs::read_to_string(path.join("product"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let display = format!("{manufacturer} {product}").trim().to_owned();
+        let display = if display.is_empty() {
+            name.clone()
+        } else {
+            display
+        };
+        devices.push(UsbWakeDevice {
+            device: name,
+            name: display,
+        });
+    }
+    Ok(devices)
 }
 
 #[cfg(test)]
@@ -566,5 +637,104 @@ mod tests {
                 wakeup_last_time_ms: 12345,
             }
         );
+    }
+
+    /// Helper: lay down a USB device dir with the given files. Each of
+    /// `wakeup`, `manufacturer`, `product` is optional; pass `None` to
+    /// omit the file entirely (exercising the "missing file" path).
+    fn write_usb_device(
+        root: &SysRoot,
+        name: &str,
+        wakeup: Option<&str>,
+        manufacturer: Option<&str>,
+        product: Option<&str>,
+    ) {
+        let base = format!("sys/bus/usb/devices/{name}");
+        // Always create the directory so it shows up in read_dir even
+        // when no files are written.
+        fs::create_dir_all(root.join(&base)).expect("create usb dir");
+        if let Some(w) = wakeup {
+            write_fixture(root, &format!("{base}/power/wakeup"), w);
+        }
+        if let Some(m) = manufacturer {
+            write_fixture(root, &format!("{base}/manufacturer"), m);
+        }
+        if let Some(p) = product {
+            write_fixture(root, &format!("{base}/product"), p);
+        }
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_manufacturer_and_product_join() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_usb_device(
+            &root,
+            "1-2",
+            Some("enabled\n"),
+            Some("Logitech\n"),
+            Some("USB Receiver\n"),
+        );
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device, "1-2");
+        assert_eq!(devices[0].name, "Logitech USB Receiver");
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_missing_manufacturer_uses_product_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_usb_device(
+            &root,
+            "1-2",
+            Some("enabled\n"),
+            None,
+            Some("USB Receiver\n"),
+        );
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert_eq!(devices.len(), 1);
+        // format!("{} {}", "", "USB Receiver").trim() == "USB Receiver"
+        assert_eq!(devices[0].name, "USB Receiver");
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_missing_both_falls_back_to_dir_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_usb_device(&root, "2-1", Some("enabled\n"), None, None);
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].device, "2-1");
+        assert_eq!(devices[0].name, "2-1");
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_disabled_excluded() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_usb_device(&root, "1-3", Some("disabled\n"), None, None);
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_missing_wakeup_file_excluded() {
+        // Directory exists but power/wakeup is absent — Python's
+        // `if wakeup_file.exists():` guard skips it; we match that.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_usb_device(&root, "1-4", None, Some("Acme\n"), Some("Widget\n"));
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn read_usb_wakeup_devices_missing_parent_returns_empty() {
+        // Headless / no USB tree → Ok(vec![]) rather than an error.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let devices = read_usb_wakeup_devices(&root).expect("read");
+        assert!(devices.is_empty());
     }
 }

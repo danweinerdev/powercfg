@@ -28,14 +28,9 @@ pub enum SourceError {
     ///
     /// Source modules use this when "file absent" carries different
     /// meaning than a generic `Io` (e.g. a PCI device path that didn't
-    /// exist at all vs. one that exists but is unreadable). The first
+    /// exist at all vs. one that exists but is unreadable). First
     /// constructor lives in `source::sysfs::read_pci_device_description`,
-    /// which is currently only reachable from tests; task 2.2 wires it
-    /// into `cmd::devicequery::run`. Until that lands the variant is
-    /// dead in the bin build.
-    // TODO(phase-2.2): drop the allow once cmd::devicequery::run reaches
-    // read_pci_device_description.
-    #[allow(dead_code)]
+    /// reached from `cmd::devicequery::run`.
     #[error("not found: {0}")]
     NotFound(String),
 

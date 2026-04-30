@@ -1,0 +1,21 @@
+---
+source: tests/devicequery.rs
+expression: out
+---
+WAKE-CAPABLE DEVICES
+==================================================
+
+[ACPI WAKE DEVICES]
+------------------------------
+  Device   State  Status     Description
+  ------   -----  --------   --------------------
+  GPP0     S4     enabled    AMD PCI Bridge
+  PWRB     S4     enabled    
+
+[USB WAKE DEVICES]
+------------------------------
+  1-2          enabled    Logitech USB Receiver
+  2-1          enabled    2-1
+
+==================================================
+Wake-enabled devices: 4 of 5
