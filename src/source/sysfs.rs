@@ -338,12 +338,13 @@ pub fn read_power_supplies(root: &SysRoot) -> Result<Vec<PowerSupply>, SourceErr
         return Ok(vec![]);
     }
     let entries = fs::read_dir(&parent)?;
-    // Sort by directory name for deterministic output across runs.
+    // Sort case-insensitively by directory name for deterministic output
+    // across runs and across machines that mix `BAT0`/`bat0` casing.
     let mut dir_names: Vec<(String, PathBuf)> = entries
         .filter_map(|e| e.ok())
         .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
         .collect();
-    dir_names.sort_by(|a, b| a.0.cmp(&b.0));
+    dir_names.sort_by_key(|a| a.0.to_ascii_lowercase());
 
     let mut supplies = Vec::with_capacity(dir_names.len());
     for (name, path) in dir_names {
@@ -487,7 +488,17 @@ pub fn read_thermal_info(root: &SysRoot) -> Result<Vec<ThermalReading>, SourceEr
                 continue;
             }
         };
-        inputs.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort by the numeric suffix so temp2 < temp10 — lexicographic
+        // ordering would put temp10 before temp2, which is fine for
+        // 1-9 sensors but breaks on real k10temp/zenpower hardware that
+        // exposes 10+ readings. Unparseable suffixes sort to the end.
+        inputs.sort_by_key(|(fname, _)| {
+            fname
+                .trim_start_matches("temp")
+                .trim_end_matches("_input")
+                .parse::<u32>()
+                .unwrap_or(u32::MAX)
+        });
 
         for (fname, input_path) in inputs {
             // "temp1_input" → "temp1".
@@ -521,27 +532,29 @@ pub fn read_thermal_info(root: &SysRoot) -> Result<Vec<ThermalReading>, SourceEr
     Ok(readings)
 }
 
-/// Aggregate CPU throttle data from two independent walks:
+/// Sum the integer contents of every
+/// `<root>/sys/devices/system/cpu/cpuN/thermal_throttle/package_throttle_count`
+/// file into a single counter. Per-CPU read or parse failures are
+/// skipped silently (logged at debug); they don't poison the running
+/// total. A missing parent directory contributes zero.
 ///
-/// 1. **Throttle count** — sum the integer contents of every
-///    `<root>/sys/devices/system/cpu/cpuN/thermal_throttle/package_throttle_count`
-///    file. Per-CPU read or parse failures are skipped silently (logged at
-///    debug); they don't poison the running total.
-/// 2. **Throttled-now flag** — if any
-///    `<root>/sys/class/thermal/thermal_zone*/mode` reads as exactly
-///    `"disabled"`, the flag is set. Per-zone read failures don't flip
-///    the flag.
+/// The function returns `Ok(ThrottleStatus { … })` even when every
+/// individual read failed — `Default` is the zero state and we don't
+/// want a healthy box without these counters to look like an error.
 ///
-/// Both walks tolerate a missing parent directory (zero contribution).
-/// The function as a whole returns `Ok(ThrottleStatus { … })` even when
-/// every individual read failed — `Default` is the zero state and we
-/// don't want a healthy box without these counters to look like an error.
+/// Diverges from Python: the Python tool also walked
+/// `thermal_zone*/mode` looking for a `"disabled"` value to set a
+/// `throttled` boolean. That walk is dropped here because the kernel
+/// ABI for `mode` is "thermal-zone administratively enabled?" — not
+/// "is the CPU currently being throttled?" — so the boolean reported
+/// the wrong thing. The historical `throttle_count` is the only
+/// meaningful current/historical signal at this layer, so the printer
+/// in 2.4 only renders that.
 // TODO(phase-2.4): wired by cmd::energy::run.
 #[allow(dead_code)]
 pub fn read_throttle_status(root: &SysRoot) -> Result<ThrottleStatus, SourceError> {
     let mut status = ThrottleStatus::default();
 
-    // 1. package_throttle_count summation.
     let cpu_root = root.join("sys/devices/system/cpu");
     if cpu_root.exists() {
         if let Ok(iter) = fs::read_dir(&cpu_root) {
@@ -566,30 +579,6 @@ pub fn read_throttle_status(root: &SysRoot) -> Result<ThrottleStatus, SourceErro
                     Ok(n) => status.throttle_count = status.throttle_count.saturating_add(n),
                     Err(e) => {
                         tracing::debug!("{fname} package_throttle_count parse: {e}");
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. thermal_zone*/mode == "disabled" check.
-    let thermal_root = root.join("sys/class/thermal");
-    if thermal_root.exists() {
-        if let Ok(iter) = fs::read_dir(&thermal_root) {
-            for entry in iter.filter_map(|e| e.ok()) {
-                let fname = entry.file_name();
-                let fname = fname.to_string_lossy();
-                if !fname.starts_with("thermal_zone") {
-                    continue;
-                }
-                let mode_path = entry.path().join("mode");
-                match fs::read_to_string(&mode_path) {
-                    Ok(s) if s.trim() == "disabled" => {
-                        status.throttled = true;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::debug!("{fname}/mode: {e}");
                     }
                 }
             }
@@ -1415,40 +1404,6 @@ mod tests {
 
         let status = read_throttle_status(&root).expect("read");
         assert_eq!(status.throttle_count, 10);
-        assert!(!status.throttled);
-    }
-
-    #[test]
-    fn read_throttle_status_disabled_zone_sets_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let root = SysRoot::new(tmp.path());
-        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "disabled\n");
-
-        let status = read_throttle_status(&root).expect("read");
-        assert!(status.throttled);
-        assert_eq!(status.throttle_count, 0);
-    }
-
-    #[test]
-    fn read_throttle_status_all_enabled_zones_no_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let root = SysRoot::new(tmp.path());
-        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "enabled\n");
-        write_fixture(&root, "sys/class/thermal/thermal_zone1/mode", "enabled\n");
-
-        let status = read_throttle_status(&root).expect("read");
-        assert!(!status.throttled);
-    }
-
-    #[test]
-    fn read_throttle_status_no_zones_no_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let root = SysRoot::new(tmp.path());
-        // Empty thermal dir present but no thermal_zone* children.
-        fs::create_dir_all(root.join("sys/class/thermal")).expect("mkdir");
-
-        let status = read_throttle_status(&root).expect("read");
-        assert!(!status.throttled);
     }
 
     #[test]
@@ -1496,15 +1451,87 @@ mod tests {
     }
 
     #[test]
-    fn read_throttle_status_mixed_zones_one_disabled() {
-        // Multiple zones, only one disabled — flag still flips.
+    fn read_throttle_status_ignores_thermal_zone_files() {
+        // The Python tool walked thermal_zone*/mode looking for "disabled"
+        // values to set a `throttled` flag — that walk is gone in the Rust
+        // impl because mode=disabled means the zone is administratively
+        // turned off, not that the CPU is being throttled. A "disabled"
+        // zone present here must NOT influence the result.
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = SysRoot::new(tmp.path());
-        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "enabled\n");
-        write_fixture(&root, "sys/class/thermal/thermal_zone1/mode", "disabled\n");
-        write_fixture(&root, "sys/class/thermal/thermal_zone2/mode", "enabled\n");
+        write_fixture(&root, "sys/class/thermal/thermal_zone0/mode", "disabled\n");
+        write_fixture(&root, "sys/class/thermal/thermal_zone1/mode", "enabled\n");
 
         let status = read_throttle_status(&root).expect("read");
-        assert!(status.throttled);
+        assert_eq!(status, ThrottleStatus::default());
+    }
+
+    // -----------------------------------------------------------------
+    // Fixture-tree tests — exercise the four readers against the
+    // committed sys-typical disk fixtures so a fixture edit that breaks
+    // the on-disk layout fails locally rather than only surfacing in
+    // 2.4's integration tests.
+    // -----------------------------------------------------------------
+
+    fn typical_root() -> SysRoot {
+        SysRoot::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sys-typical",
+        ))
+    }
+
+    #[test]
+    fn read_power_supplies_typical_fixture_tree() {
+        let supplies = read_power_supplies(&typical_root()).expect("read fixture");
+        assert_eq!(supplies.len(), 2);
+        assert_eq!(supplies[0].name, "AC");
+        assert_eq!(supplies[0].kind.as_deref(), Some("Mains"));
+        assert!(
+            supplies[0].capacity_pct.is_none(),
+            "AC adapter has no capacity file"
+        );
+        assert_eq!(supplies[1].name, "BAT0");
+        assert_eq!(supplies[1].kind.as_deref(), Some("Battery"));
+        assert_eq!(supplies[1].capacity_pct, Some(87));
+        assert_eq!(supplies[1].level.as_deref(), Some("Normal"));
+        assert_eq!(supplies[1].power_uw, Some(12_500_000));
+    }
+
+    #[test]
+    fn read_cpu_freq_info_typical_fixture_tree() {
+        let info = read_cpu_freq_info(&typical_root()).expect("read fixture");
+        assert_eq!(info.driver.as_deref(), Some("amd-pstate-epp"));
+        assert_eq!(info.governor.as_deref(), Some("powersave"));
+        assert_eq!(info.cur_freq_khz, Some(3_400_000));
+        assert_eq!(info.min_freq_khz, Some(400_000));
+        assert_eq!(info.max_freq_khz, Some(4_800_000));
+        assert_eq!(info.epp.as_deref(), Some("balance_performance"));
+        assert!(info.epp_available.is_some());
+        assert_eq!(info.cpu_count, 16, "fixture has cpu0..cpu15");
+    }
+
+    #[test]
+    fn read_thermal_info_typical_fixture_tree() {
+        let mut readings = read_thermal_info(&typical_root()).expect("read fixture");
+        // Sort by label for stable assertion ordering.
+        readings.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(
+            readings.len(),
+            2,
+            "fixture has temp1 (Tctl) + temp2 (CPU fallback)"
+        );
+        assert_eq!(readings[0].label, "CPU"); // temp2 has no label file
+        assert_eq!(readings[0].source, "k10temp");
+        assert!((readings[0].temp_c - 50.1).abs() < 0.001);
+        assert_eq!(readings[1].label, "Tctl"); // temp1
+        assert!((readings[1].temp_c - 52.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn read_throttle_status_typical_fixture_tree() {
+        let status = read_throttle_status(&typical_root()).expect("read fixture");
+        // sys-typical has cpu0/thermal_throttle/package_throttle_count = 0
+        // and cpu1..cpu15 have no throttle files at all.
+        assert_eq!(status.throttle_count, 0);
     }
 }

@@ -61,18 +61,25 @@ pub struct ThermalReading {
     pub source: String, // hwmon "name" file value: "k10temp", "coretemp", ...
 }
 
-/// CPU-throttle snapshot. `throttled` is "currently throttled" (any
-/// `thermal_zone*/mode` reads as `disabled`); `throttle_count` is the
-/// historical sum of `cpu*/thermal_throttle/package_throttle_count`.
+/// Historical CPU thermal-throttle counter — sum of
+/// `cpu*/thermal_throttle/package_throttle_count` across all CPUs since
+/// boot. Non-zero values are an "this machine has been thermally
+/// limited at least N times" signal; the printer renders them as a
+/// historical-events line.
 ///
-/// `Default` is the "no-throttle" zero state; the source-layer reader
-/// returns it when both walks come up empty (which is the common case on
-/// healthy hardware).
+/// Diverges from Python: the Python tool also exposed a `throttled`
+/// boolean derived from `thermal_zone*/mode == "disabled"`, but that is
+/// not what the kernel ABI means — `mode = "disabled"` indicates a
+/// thermal zone has been administratively turned OFF (e.g., by a
+/// userspace thermal daemon taking over), not that the CPU is currently
+/// being throttled. On 99%+ of machines the Python flag prints
+/// `Not throttled` regardless of actual thermal state, so the field is
+/// dropped here and the printer relies on `throttle_count > 0` as the
+/// only meaningful signal.
 // TODO(phase-2.4): wired by cmd::energy::run.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThrottleStatus {
-    pub throttled: bool,     // true if any thermal_zone has mode == "disabled"
     pub throttle_count: u64, // sum of cpu*/thermal_throttle/package_throttle_count
 }
 
