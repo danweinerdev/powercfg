@@ -2,12 +2,19 @@
 
 use anyhow::Result;
 
+/// Per-call arguments. Mirrors the clap `Command::Devicequery` variant fields.
+#[derive(Debug)]
+pub struct Args {
+    pub verbose: bool,
+    pub enabled_only: bool,
+}
+
 /// Stub for the `devicequery` subcommand.
 ///
 /// Real implementation lands in phase 2 (ACPI wakeup parsing, USB/PCI
 /// device walking, vendor/class lookup). Calling this panics with a
 /// clear message so accidental dispatches in development surface
 /// immediately rather than silently no-op'ing.
-pub fn run(_verbose: bool, _enabled_only: bool) -> Result<()> {
+pub fn run(_args: Args) -> Result<()> {
     unimplemented!("devicequery: implemented in phase 2")
 }

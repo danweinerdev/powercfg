@@ -87,9 +87,11 @@ fn sleepstates_stub_runs_cleanly() {
 }
 
 #[test]
-fn requests_stub_panics() {
+fn requests_stub_exits_nonzero() {
     // Panicking stubs surface as non-zero exit. We don't snapshot the
     // panic message because Rust's panic format is not stable across
-    // compiler versions.
+    // compiler versions. The contract being asserted is the observable
+    // exit code, not the implementation mechanism — when the real handler
+    // lands in phase 3, this test naturally inverts via the per-task work.
     powercfg().arg("requests").assert().failure();
 }

@@ -8,9 +8,5 @@
 
 pub mod error;
 
-// Re-exported so command modules can write `use crate::source::SourceError`.
-// Currently unused at the crate root because the 1.2 utilities are not yet
-// wired into a command handler; the re-export earns its keep starting at
-// task 1.4 when `cmd::sleepstates` consumes the source layer.
-#[allow(unused_imports)]
-pub use error::SourceError;
+// Note: no `pub use error::SourceError` re-export yet — added at task 1.4
+// when the first source module returns the type to a command handler.

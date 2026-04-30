@@ -25,16 +25,28 @@ fn main() -> std::process::ExitCode {
 
     let cli = cli::Cli::parse();
 
+    // Each variant destructures into the matching `cmd::*::Args` struct.
+    // Future args (Format, SysRoot, etc.) extend the Args struct rather than
+    // threading new positional params through six dispatch arms.
     let result = match cli.command {
-        cli::Command::Requests { verbose } => cmd::requests::run(verbose),
-        cli::Command::Lastwake { verbose, history } => cmd::lastwake::run(verbose, history),
+        cli::Command::Requests { verbose } => cmd::requests::run(cmd::requests::Args { verbose }),
+        cli::Command::Lastwake { verbose, history } => {
+            cmd::lastwake::run(cmd::lastwake::Args { verbose, history })
+        }
         cli::Command::Devicequery {
             verbose,
             enabled_only,
-        } => cmd::devicequery::run(verbose, enabled_only),
-        cli::Command::Sleepstates { verbose } => cmd::sleepstates::run(verbose),
-        cli::Command::Waketimers { verbose } => cmd::waketimers::run(verbose),
-        cli::Command::Energy { verbose } => cmd::energy::run(verbose),
+        } => cmd::devicequery::run(cmd::devicequery::Args {
+            verbose,
+            enabled_only,
+        }),
+        cli::Command::Sleepstates { verbose } => {
+            cmd::sleepstates::run(cmd::sleepstates::Args { verbose })
+        }
+        cli::Command::Waketimers { verbose } => {
+            cmd::waketimers::run(cmd::waketimers::Args { verbose })
+        }
+        cli::Command::Energy { verbose } => cmd::energy::run(cmd::energy::Args { verbose }),
     };
 
     match result {

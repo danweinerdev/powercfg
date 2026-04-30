@@ -2,12 +2,18 @@
 
 use anyhow::Result;
 
+/// Per-call arguments. Mirrors the clap `Command::Energy` variant fields.
+#[derive(Debug)]
+pub struct Args {
+    pub verbose: bool,
+}
+
 /// Stub for the `energy` subcommand.
 ///
 /// Real implementation lands in phase 2 (power supplies, CPU frequency,
 /// hwmon, thermal zones, throttle counters). Calling this panics with a
 /// clear message so accidental dispatches in development surface
 /// immediately rather than silently no-op'ing.
-pub fn run(_verbose: bool) -> Result<()> {
+pub fn run(_args: Args) -> Result<()> {
     unimplemented!("energy: implemented in phase 2")
 }
