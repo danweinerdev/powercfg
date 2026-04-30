@@ -2,10 +2,14 @@
 //!
 //! Phase 1 only needs `/proc/swaps`; later phases add `/proc/interrupts`,
 //! `/proc/acpi/wakeup`, and process discovery via `/proc/<pid>/comm`.
+//! Phase 3.3 added [`find_processes_by_comm`], which walks `/proc/`
+//! directly in favor of shelling out to a process-listing tool — see
+//! Designs/RustRewrite/README.md Decision 3a.
 
 use std::fs;
 
 use crate::model::devicequery::AcpiWakeDevice;
+use crate::model::requests::ProcessInfo;
 use crate::paths::SysRoot;
 use crate::source::SourceError;
 
@@ -134,6 +138,70 @@ fn parse_swaps(content: &str) -> Vec<SwapDevice> {
             })
         })
         .collect()
+}
+
+/// Walk `<root>/proc/`, find processes whose `/proc/<pid>/comm` matches
+/// any of the given names, and return them as `ProcessInfo`.
+///
+/// Replaces the Python tool's process-listing shellouts (e.g. for
+/// `qemu`, `VBoxHeadless`) with a direct directory walk (Decision 3a).
+///
+/// Filtering is exact-match against the trimmed `comm` content. The
+/// kernel truncates `comm` at 15 characters, so caller-supplied names
+/// must respect that limit — pass `"qemu-system-x86"` rather than the
+/// full `"qemu-system-x86_64"`. The 15-char cap is enforced silently by
+/// the kernel; passing a longer name simply produces no matches.
+///
+/// Behavior:
+/// - Non-numeric direntries (`net`, `cpuinfo`, `self`, etc.) are
+///   silently skipped.
+/// - Unreadable `comm` files (process exited mid-walk, permission
+///   denied) are silently skipped — their PID is omitted from the
+///   result.
+/// - An empty `names` slice short-circuits to `Ok(vec![])` without
+///   walking the directory.
+/// - Returns `Err(SourceError::Io)` only if `<root>/proc/` itself can't
+///   be enumerated, which is virtually impossible on a running Linux
+///   system but happens in tests when the fixture omits `proc/`.
+// TODO(phase-3.4): first production caller is `cmd::requests` for VM
+// detection; drop the allow once wired up.
+#[allow(dead_code)]
+pub fn find_processes_by_comm(
+    root: &SysRoot,
+    names: &[&str],
+) -> Result<Vec<ProcessInfo>, SourceError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let proc_dir = root.join("proc");
+    let entries = fs::read_dir(&proc_dir)?;
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name_str.parse::<u32>() else {
+            // Non-numeric direntries (net, cpuinfo, self, ...) are
+            // silently skipped — only numeric PID dirs interest us.
+            continue;
+        };
+
+        let comm_path = entry.path().join("comm");
+        let Ok(raw) = fs::read_to_string(&comm_path) else {
+            // Process exited mid-walk, permission denied, or
+            // /proc/<pid>/comm absent — silently skip.
+            continue;
+        };
+        let comm = raw.trim_end_matches('\n').trim_end().to_owned();
+        if names.iter().any(|n| *n == comm) {
+            found.push(ProcessInfo { pid, comm });
+        }
+    }
+
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -350,5 +418,132 @@ GPP8 S4
         assert!(!devices[1].enabled, "GPP8 marked *disabled in fixture");
         assert_eq!(devices[2].device, "PWRB");
         assert!(devices[2].sysfs.is_none(), "PWRB has no sysfs column");
+    }
+
+    /// Helper for the `/proc` walk tests: build a fake `<root>/proc/<pid>/comm`.
+    fn write_comm(root: &SysRoot, pid_dir: &str, comm: &str) {
+        let path = root.join(format!("proc/{pid_dir}/comm"));
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, comm).expect("write comm");
+    }
+
+    #[test]
+    fn find_processes_by_comm_returns_only_matching_pids() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_comm(&root, "1234", "qemu-system-x86\n");
+        write_comm(&root, "5678", "bash\n");
+        let found =
+            find_processes_by_comm(&root, &["qemu-system-x86"]).expect("walk should succeed");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, 1234);
+        assert_eq!(found[0].comm, "qemu-system-x86");
+    }
+
+    #[test]
+    fn find_processes_by_comm_skips_non_numeric_direntries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Layout `/proc/` with a real numeric PID dir plus the kinds of
+        // non-numeric children the kernel always exposes (net, cpuinfo,
+        // self) so the walk has to filter them out without erroring.
+        write_comm(&root, "42", "qemu-system-x86\n");
+        std::fs::create_dir_all(root.join("proc/net")).expect("mkdir net");
+        std::fs::write(root.join("proc/cpuinfo"), b"model name : x\n").expect("cpuinfo");
+        std::fs::create_dir_all(root.join("proc/self")).expect("mkdir self");
+
+        let found =
+            find_processes_by_comm(&root, &["qemu-system-x86"]).expect("walk should succeed");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, 42);
+    }
+
+    #[test]
+    fn find_processes_by_comm_skips_pid_dir_without_comm_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // PID dir exists but has no `comm` file (process raced to exit
+        // between the directory listing and the read). Must be silently
+        // skipped, not surfaced as an error.
+        std::fs::create_dir_all(root.join("proc/9999")).expect("mkdir");
+        write_comm(&root, "1234", "qemu-system-x86\n");
+
+        let found = find_processes_by_comm(&root, &["qemu-system-x86"]).expect("walk");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, 1234);
+    }
+
+    #[test]
+    fn find_processes_by_comm_trims_trailing_newline() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // The kernel always appends `\n` to /proc/<pid>/comm. Make sure
+        // the trim happens before the equality check.
+        write_comm(&root, "1", "bash\n");
+        let found = find_processes_by_comm(&root, &["bash"]).expect("walk");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].comm, "bash");
+    }
+
+    #[test]
+    fn find_processes_by_comm_excludes_non_matching_comm() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_comm(&root, "1", "bash\n");
+        write_comm(&root, "2", "zsh\n");
+        let found = find_processes_by_comm(&root, &["fish"]).expect("walk");
+        assert!(found.is_empty(), "no match should yield empty Vec");
+    }
+
+    #[test]
+    fn find_processes_by_comm_empty_names_returns_empty_without_walking() {
+        // Empty names slice short-circuits — `proc/` doesn't even need
+        // to exist for the call to succeed.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let found = find_processes_by_comm(&root, &[]).expect("empty names is Ok");
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_processes_by_comm_missing_proc_dir_is_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // No `proc/` under the fixture root — read_dir surfaces ENOENT.
+        let err = find_processes_by_comm(&root, &["bash"]).expect_err("missing proc/ should error");
+        assert!(matches!(err, SourceError::Io(_)));
+    }
+
+    #[test]
+    fn find_processes_by_comm_returns_multiple_matches_for_same_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Two PIDs both running qemu — both must come back. Order
+        // depends on the filesystem's directory iteration so the test
+        // sorts by PID before asserting.
+        write_comm(&root, "1001", "qemu-system-x86\n");
+        write_comm(&root, "1002", "qemu-system-x86\n");
+        let mut found = find_processes_by_comm(&root, &["qemu-system-x86"]).expect("walk");
+        found.sort_by_key(|p| p.pid);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].pid, 1001);
+        assert_eq!(found[1].pid, 1002);
+    }
+
+    #[test]
+    fn find_processes_by_comm_matches_any_in_names_list() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Names list with two entries — `cmd::requests` will pass
+        // `["qemu-system-x86", "VBoxHeadless"]` together.
+        write_comm(&root, "10", "qemu-system-x86\n");
+        write_comm(&root, "20", "VBoxHeadless\n");
+        write_comm(&root, "30", "bash\n");
+        let mut found =
+            find_processes_by_comm(&root, &["qemu-system-x86", "VBoxHeadless"]).expect("walk");
+        found.sort_by_key(|p| p.pid);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].comm, "qemu-system-x86");
+        assert_eq!(found[1].comm, "VBoxHeadless");
     }
 }

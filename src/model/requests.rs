@@ -2,6 +2,8 @@
 //!
 //! `RequestsReport` lands in task 3.4; for 3.2 we ship the leaf
 //! `Inhibitor` type that `source::dbus::list_inhibitors` produces.
+//! Task 3.3 adds `ProcessInfo` (used by the `/proc` walk for VM
+//! detection) and `AudioStream` (used by the `pactl` shellout).
 
 /// One sleep/idle inhibitor as returned by logind's `ListInhibitors`.
 ///
@@ -61,6 +63,36 @@ fn resolve_comm(pid: u32) -> Option<String> {
     std::fs::read_to_string(&path)
         .ok()
         .map(|s| s.trim().to_owned())
+}
+
+/// One running process matching a name lookup.
+///
+/// Produced by `source::procfs::find_processes_by_comm` and consumed by
+/// the VM-detection path in `cmd::requests` (3.4). The `comm` field is
+/// the kernel's truncated 15-character process name (the value in
+/// `/proc/<pid>/comm`), not a full executable path.
+// TODO(phase-3.4): consumed by `cmd::requests`; drop allow once wired up.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub comm: String,
+}
+
+/// One active PulseAudio/PipeWire sink-input.
+///
+/// Produced by `source::userspace::list_audio_streams` (which shells
+/// out to `pactl list sink-inputs short`) and consumed by
+/// `cmd::requests` (3.4). `id` is the sink-input ID (numeric in
+/// practice but typed as `String` to match the raw column from
+/// `pactl`'s output). `client` is the client name or `"Unknown"` if
+/// the column is missing.
+// TODO(phase-3.4): consumed by `cmd::requests`; drop allow once wired up.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioStream {
+    pub id: String,
+    pub client: String,
 }
 
 #[cfg(test)]

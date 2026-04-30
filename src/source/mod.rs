@@ -11,5 +11,6 @@ pub mod error;
 pub mod exec;
 pub mod procfs;
 pub mod sysfs;
+pub mod userspace;
 
 pub use error::SourceError;

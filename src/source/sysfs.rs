@@ -65,6 +65,30 @@ pub fn read_image_size_bytes(root: &SysRoot) -> Result<u64, SourceError> {
         .map_err(|e| SourceError::Parse(format!("image_size: {e} (input: {trimmed:?})")))
 }
 
+/// Read `/sys/power/wake_lock` and split its contents on whitespace.
+///
+/// Returns the active kernel wake-lock names as separate tokens.
+/// Mirrors Python's `get_kernel_wake_locks` (try/except: pass) — both
+/// "the kernel doesn't support wakelocks at all" (file absent) and
+/// "we can't read it" (`PermissionDenied`) collapse to `Ok(vec![])`
+/// rather than surfacing as errors. Other I/O failures (e.g., a real
+/// disk fault) propagate as `SourceError::Io` so they remain
+/// observable at debug log level.
+// TODO(phase-3.4): first production caller is `cmd::requests`; drop
+// the allow once wired up.
+#[allow(dead_code)]
+pub fn read_kernel_wake_locks(root: &SysRoot) -> Result<Vec<String>, SourceError> {
+    let path = root.join("sys/power/wake_lock");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    match fs::read_to_string(&path) {
+        Ok(content) => Ok(content.split_whitespace().map(|s| s.to_owned()).collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(Vec::new()),
+        Err(e) => Err(SourceError::Io(e)),
+    }
+}
+
 /// Parse the kernel's bracketed-current syntax into `(modes, current)`.
 ///
 /// Mirrors Python `get_mem_sleep_modes`/`get_disk_modes`: the bracketed
@@ -1525,5 +1549,88 @@ mod tests {
         // sys-typical has cpu0/thermal_throttle/package_throttle_count = 0
         // and cpu1..cpu15 have no throttle files at all.
         assert_eq!(status.throttle_count, 0);
+    }
+
+    #[test]
+    fn read_kernel_wake_locks_typical_content_splits_on_whitespace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/power/wake_lock", "audio video bluetooth\n");
+        let locks = read_kernel_wake_locks(&root).expect("read");
+        assert_eq!(locks, vec!["audio", "video", "bluetooth"]);
+    }
+
+    #[test]
+    fn read_kernel_wake_locks_empty_file_yields_empty_vec() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/power/wake_lock", "");
+        let locks = read_kernel_wake_locks(&root).expect("read");
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn read_kernel_wake_locks_whitespace_only_yields_empty_vec() {
+        // Some kernels emit just `\n` when no locks are held; the
+        // Python tool's `.strip()` reduces that to `""`. We split on
+        // whitespace which similarly yields zero tokens.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/power/wake_lock", "\n");
+        let locks = read_kernel_wake_locks(&root).expect("read");
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn read_kernel_wake_locks_missing_file_is_ok_empty() {
+        // A kernel without wakelock support has no /sys/power/wake_lock
+        // at all. The Python tool's `if wake_lock_path.exists():`
+        // guard maps that to "no locks"; mirror it.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let locks = read_kernel_wake_locks(&root).expect("missing file is Ok");
+        assert!(locks.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_kernel_wake_locks_permission_denied_is_ok_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        // Some distributions chmod the file to 0o600; running as a
+        // non-root test user yields EACCES on read. Match Python's
+        // try/except: pass behavior — Ok(vec![]) rather than Err.
+        // Skip when running as root since chmod 0o000 doesn't block
+        // the superuser and the test would surface a different value.
+        if nix_is_root() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let path = root.join("sys/power/wake_lock");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, "audio\n").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+        let result = read_kernel_wake_locks(&root);
+
+        // Restore perms before asserting so the tempdir can be cleaned
+        // up even if the assertion fails.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        let locks = result.expect("permission denied collapses to Ok");
+        assert!(locks.is_empty());
+    }
+
+    /// Best-effort root check for the permission-denied test.
+    /// Avoids the `nix` crate dep — `geteuid` via libc is enough.
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        // SAFETY: geteuid is always safe to call.
+        unsafe { libc_geteuid() == 0 }
+    }
+
+    #[cfg(unix)]
+    unsafe extern "C" {
+        #[link_name = "geteuid"]
+        fn libc_geteuid() -> u32;
     }
 }
