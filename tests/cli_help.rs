@@ -76,13 +76,25 @@ fn no_subcommand_fails() {
 }
 
 #[test]
-fn sleepstates_stub_runs_cleanly() {
-    // The 1.3 verification field requires the `sleepstates` stub to exit 0.
-    let output = powercfg().arg("sleepstates").assert().success();
-    // Stub is a no-op; stdout should be empty until task 1.4 fills the body.
+fn sleepstates_runs_cleanly() {
+    // Task 1.4 fills the body; the assertion is now exit 0 plus a
+    // recognizable header. Pointing at an empty SYSROOT (a tempdir
+    // prefix that doesn't exist) makes every source read fail and
+    // exercises the swallow-with-debug behavior — the handler still
+    // prints headers and "Unable to read sleep states", still exits 0.
+    let assertion = powercfg()
+        .env("POWERCFG_SYSROOT", "/nonexistent-powercfg-test-root")
+        .arg("sleepstates")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
     assert!(
-        output.get_output().stdout.is_empty(),
-        "sleepstates stub should emit no stdout at 1.3"
+        stdout.contains("AVAILABLE SLEEP STATES"),
+        "sleepstates should print the section header: {stdout}",
+    );
+    assert!(
+        stdout.contains("Unable to read sleep states"),
+        "sleepstates with empty sysroot should fall back to the empty-data message: {stdout}",
     );
 }
 

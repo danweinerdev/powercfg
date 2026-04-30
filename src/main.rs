@@ -1,19 +1,14 @@
-// The 1.2 utility modules (`paths`, `time`, `format::*`, `source::error`) are
-// declared and exercised by their own unit tests but not yet referenced from
-// any command handler — `sleepstates` is a no-op stub at 1.3 and the other
-// five `unimplemented!()`. Task 1.4 wires the first real call sites and the
-// item-level dead code disappears; until then this lid keeps `cargo build`
-// warning-free without forcing every utility item to carry its own allow.
-#![allow(dead_code)]
-
 mod cli;
 mod cmd;
 mod format;
+mod model;
 mod paths;
 mod source;
 mod time;
 
 use clap::Parser;
+
+use crate::paths::SysRoot;
 
 fn main() -> std::process::ExitCode {
     // Initialize tracing-subscriber early so source-layer debug! calls
@@ -40,9 +35,10 @@ fn main() -> std::process::ExitCode {
             verbose,
             enabled_only,
         }),
-        cli::Command::Sleepstates { verbose } => {
-            cmd::sleepstates::run(cmd::sleepstates::Args { verbose })
-        }
+        cli::Command::Sleepstates { verbose } => cmd::sleepstates::run(cmd::sleepstates::Args {
+            verbose,
+            root: SysRoot::from_env(),
+        }),
         cli::Command::Waketimers { verbose } => {
             cmd::waketimers::run(cmd::waketimers::Args { verbose })
         }

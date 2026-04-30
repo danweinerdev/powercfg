@@ -14,6 +14,9 @@ use chrono::{DateTime, FixedOffset};
 /// `2025-12-25T21:40:21-0800` (`%z`). Rejects `Z` (UTC marker), naive
 /// timestamps without an offset, and any other malformed input by
 /// returning `None`. The Python source likewise does not handle `Z`.
+// TODO(phase-4): consumed by cmd::lastwake when the journalctl parser
+// lands. Drop the allow then.
+#[allow(dead_code)]
 pub fn parse_iso_timestamp(s: &str) -> Option<DateTime<FixedOffset>> {
     // Try the colon-separated form first (the more common journalctl
     // shape: `short-iso` emits `±HH:MM`).

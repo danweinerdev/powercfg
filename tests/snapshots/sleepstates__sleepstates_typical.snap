@@ -1,0 +1,26 @@
+---
+source: tests/sleepstates.rs
+expression: stdout(&assertion)
+---
+AVAILABLE SLEEP STATES
+==================================================
+
+[SLEEP STATES]
+------------------------------
+  freeze     Suspend-to-Idle (S0ix)
+  mem        Suspend-to-RAM (S3)
+  disk       Hibernation (S4)
+
+[MEMORY SLEEP MODE]
+------------------------------
+  Current: s2idle - Suspend-to-Idle (software-driven)
+  Available: s2idle, deep
+
+[HIBERNATION MODE]
+------------------------------
+  Current: platform
+  Swap: 24575 MB available
+    /dev/dm-0: 16.0 GB
+    /dev/zram0: 8.0 GB (may not support hibernation)
+
+==================================================

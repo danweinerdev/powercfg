@@ -1,0 +1,20 @@
+---
+source: tests/sleepstates.rs
+expression: out
+---
+AVAILABLE SLEEP STATES
+==================================================
+
+[SLEEP STATES]
+------------------------------
+  freeze     Suspend-to-Idle (S0ix)
+             Lowest latency, moderate power savings
+  mem        Suspend-to-RAM (S3)
+             Fast resume, good power savings
+
+[MEMORY SLEEP MODE]
+------------------------------
+  Current: s2idle - Suspend-to-Idle (software-driven)
+  Available: s2idle, deep
+
+==================================================

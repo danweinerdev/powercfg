@@ -3,6 +3,8 @@
 use anyhow::Result;
 
 /// Per-call arguments. Mirrors the clap `Command::Energy` variant fields.
+// TODO(phase-2): field read by run() when the real handler lands.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,

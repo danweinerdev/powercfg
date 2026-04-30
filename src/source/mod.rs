@@ -7,6 +7,7 @@
 //! behavior. See `Designs/RustRewrite/README.md` Decision 7.
 
 pub mod error;
+pub mod procfs;
+pub mod sysfs;
 
-// Note: no `pub use error::SourceError` re-export yet — added at task 1.4
-// when the first source module returns the type to a command handler.
+pub use error::SourceError;

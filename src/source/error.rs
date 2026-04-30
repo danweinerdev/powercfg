@@ -25,6 +25,10 @@ pub enum SourceError {
     Parse(String),
 
     /// Expected file/path/device was absent on this system.
+    // TODO(phase-2): constructed by source modules that want to distinguish
+    // "file absent" from generic Io. Drop the allow when the first caller
+    // adopts it.
+    #[allow(dead_code)]
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -33,6 +37,8 @@ pub enum SourceError {
     /// Phase 3.2 changes the payload to `zbus::Error`; the variant is
     /// declared now so Phase 2 can return `Result<T, SourceError>` from
     /// sysfs/procfs sources without churning the enum later.
+    // TODO(phase-3.2): constructed by source::dbus.
+    #[allow(dead_code)]
     #[error("dbus: {0}")]
     Dbus(String),
 
@@ -40,12 +46,16 @@ pub enum SourceError {
     ///
     /// Phase 3.1 changes the payload to the in-tree `ExecError`; declared
     /// now for the same reason as `Dbus`.
+    // TODO(phase-3.1): constructed by source::exec.
+    #[allow(dead_code)]
     #[error("subprocess: {0}")]
     Subprocess(String),
 
     /// Subprocess exceeded its bounded timeout.
     ///
     /// Filled in when Phase 3.1 lands `source::exec::run_with_timeout`.
+    // TODO(phase-3.1): constructed by source::exec::run_with_timeout.
+    #[allow(dead_code)]
     #[error("timeout: {0}")]
     Timeout(String),
 }

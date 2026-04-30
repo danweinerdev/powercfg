@@ -21,6 +21,10 @@ pub const SYSROOT_ENV: &str = "POWERCFG_SYSROOT";
 
 impl SysRoot {
     /// Construct a root at an explicit path.
+    // TODO(phase-2): used by tests today; production callers in 2.x will
+    // construct from explicit paths in a few CLI flag tests. Drop the
+    // allow when one lands.
+    #[allow(dead_code)]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
@@ -34,6 +38,10 @@ impl SysRoot {
     }
 
     /// Borrow the underlying root path.
+    // TODO(phase-2): used by tests today; first production caller is
+    // the device walker (2.x), which needs to read the raw root for
+    // `read_dir` enumeration. Drop the allow when that lands.
+    #[allow(dead_code)]
     pub fn as_path(&self) -> &Path {
         &self.0
     }

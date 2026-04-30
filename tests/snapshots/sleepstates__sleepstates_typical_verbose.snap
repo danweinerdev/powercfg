@@ -1,0 +1,34 @@
+---
+source: tests/sleepstates.rs
+expression: stdout(&assertion)
+---
+AVAILABLE SLEEP STATES
+==================================================
+
+[SLEEP STATES]
+------------------------------
+  freeze     Suspend-to-Idle (S0ix)
+             Lowest latency, moderate power savings
+  mem        Suspend-to-RAM (S3)
+             Fast resume, good power savings
+  disk       Hibernation (S4)
+             Slowest resume, best power savings
+
+[MEMORY SLEEP MODE]
+------------------------------
+  Current: s2idle - Suspend-to-Idle (software-driven)
+  Available: s2idle, deep
+
+[HIBERNATION MODE]
+------------------------------
+  Current: platform
+  Available: platform, shutdown, reboot
+  Swap: 24575 MB available
+    /dev/dm-0: 16.0 GB
+    /dev/zram0: 8.0 GB (may not support hibernation)
+
+[HIBERNATION IMAGE]
+------------------------------
+  Max image size: 4000 MB
+
+==================================================

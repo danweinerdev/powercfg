@@ -1,0 +1,18 @@
+---
+source: tests/sleepstates.rs
+expression: out
+---
+AVAILABLE SLEEP STATES
+==================================================
+
+[SLEEP STATES]
+------------------------------
+  freeze     Suspend-to-Idle (S0ix)
+  mem        Suspend-to-RAM (S3)
+
+[MEMORY SLEEP MODE]
+------------------------------
+  Current: s2idle - Suspend-to-Idle (software-driven)
+  Available: s2idle, deep
+
+==================================================

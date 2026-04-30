@@ -43,6 +43,8 @@ impl Cli {
     ///
     /// Currently unused at dispatch time but exposed for the format wiring
     /// landing in Phase 5.
+    // TODO(phase-5): wire `--json` through dispatch and drop this allow.
+    #[allow(dead_code)]
     pub fn format(&self) -> Format {
         if self.json {
             Format::Json

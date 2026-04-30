@@ -14,6 +14,9 @@ use std::time::Duration;
 /// Sub-second precision is intentionally truncated: the Python source
 /// uses `int(td.total_seconds())` and downstream renderers (sleep
 /// duration, idle time) display whole seconds.
+// TODO(phase-2/4): consumed by cmd::energy (CPU idle) and cmd::lastwake
+// (sleep/wake duration). Drop the allow when either lands.
+#[allow(dead_code)]
 pub fn format_duration(d: Duration) -> String {
     let total_seconds = d.as_secs();
     let days = total_seconds / 86_400;
