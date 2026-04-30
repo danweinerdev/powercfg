@@ -131,11 +131,23 @@ pub fn list_systemd_timers(conn: &Connection) -> Result<Vec<TimerEntry>, SourceE
             .path(obj_path)?
             .build()?;
         // Property reads can fail if the unit isn't actually a timer
-        // (rare, but possible during reload races). Skip failures
-        // silently; debug-level tracing would be the natural addition
-        // but is not wired up to this layer yet.
-        let wake = timer.wake_system().unwrap_or(false);
-        let next_us = timer.next_elapse_u_sec_realtime().unwrap_or(0);
+        // (rare, but possible during reload races) or if the unit
+        // exists but doesn't expose the Timer interface. Failures
+        // surface via tracing::debug! so they're visible under
+        // RUST_LOG=debug — important because `wake_system` defaulting
+        // to `false` on read failure means a misconfigured timer would
+        // silently appear as "does not prevent wake."
+        let wake = timer.wake_system().unwrap_or_else(|e| {
+            tracing::debug!(unit = name.as_str(), "wake_system read failed: {e}");
+            false
+        });
+        let next_us = timer.next_elapse_u_sec_realtime().unwrap_or_else(|e| {
+            tracing::debug!(
+                unit = name.as_str(),
+                "next_elapse_u_sec_realtime read failed: {e}"
+            );
+            0
+        });
         timers.push(TimerEntry {
             unit: name,
             wake_system: wake,
