@@ -43,7 +43,10 @@ fn main() -> std::process::ExitCode {
         cli::Command::Waketimers { verbose } => {
             cmd::waketimers::run(cmd::waketimers::Args { verbose })
         }
-        cli::Command::Energy { verbose } => cmd::energy::run(cmd::energy::Args { verbose }),
+        cli::Command::Energy { verbose } => cmd::energy::run(cmd::energy::Args {
+            verbose,
+            root: SysRoot::from_env(),
+        }),
     };
 
     match result {

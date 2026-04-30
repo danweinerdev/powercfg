@@ -4,7 +4,9 @@
 //! reasonable; integration tests assert this via `insta` snapshots. New
 //! printers land here per-subcommand as Phase 1+ implements each handler.
 
+use crate::format::freq::format_freq;
 use crate::model::devicequery::DeviceQueryReport;
+use crate::model::energy::EnergyReport;
 use crate::model::sleepstates::SleepStatesReport;
 use crate::paths::SysRoot;
 use crate::source::sysfs;
@@ -262,4 +264,114 @@ pub fn print_devicequery(
     println!();
     println!("{}", "=".repeat(50));
     println!("Wake-enabled devices: {enabled_count} of {total_count}");
+}
+
+/// Print an [`EnergyReport`] in the Python tool's text format.
+///
+/// Section structure (matches `cmd_energy`, powercfg.py 940-1012):
+/// - `[POWER SUPPLIES]` — always prints. Empty supplies list renders the
+///   `No power supplies detected (desktop system)` fallback (Python 967).
+/// - `[CPU FREQUENCY]` — always prints. Each per-field line is
+///   conditional on the matching `Option` being `Some`. The current
+///   frequency line additionally collapses to bare-current when min/max
+///   aren't both present, and is suppressed entirely when `cur_freq_khz`
+///   is `None`. `verbose` adds a 4-space-indented `Available:` line under
+///   `Energy preference:` listing the kernel-supplied EPP options.
+/// - `[TEMPERATURES]` — suppressed when `report.temperatures` is empty
+///   (Python's `if temps:` guard at line 994).
+/// - `[THERMAL THROTTLING]` — suppressed when `throttle_count == 0`. The
+///   Python tool's `Status: THROTTLED`/`Status: Not throttled` line is
+///   intentionally absent (the Python flag was based on a misread of the
+///   thermal-zone `mode` ABI; dropped at the 2.3 quality pass).
+pub fn print_energy(report: &EnergyReport, verbose: bool) {
+    println!("ENERGY STATUS");
+    println!("{}", "=".repeat(50));
+
+    // [POWER SUPPLIES]
+    println!();
+    println!("[POWER SUPPLIES]");
+    println!("{}", "-".repeat(30));
+    if report.supplies.is_empty() {
+        println!("  No power supplies detected (desktop system)");
+    } else {
+        for ps in &report.supplies {
+            let mut desc = match &ps.status {
+                Some(s) => s.clone(),
+                None => "Unknown".to_owned(),
+            };
+            if let Some(pct) = ps.capacity_pct {
+                desc.push_str(&format!(" ({pct}%)"));
+            } else if let Some(level) = &ps.level {
+                desc.push_str(&format!(" ({level})"));
+            }
+            if let Some(uw) = ps.power_uw {
+                let watts = uw as f64 / 1_000_000.0;
+                desc.push_str(&format!(" - {watts:.1}W"));
+            }
+            println!("  {}: {desc}", ps.name);
+        }
+    }
+
+    // [CPU FREQUENCY]
+    println!();
+    println!("[CPU FREQUENCY]");
+    println!("{}", "-".repeat(30));
+    if let Some(cpu) = &report.cpu {
+        if let Some(driver) = &cpu.driver {
+            println!("  Driver: {driver}");
+        }
+        if let Some(governor) = &cpu.governor {
+            println!("  Governor: {governor}");
+        }
+        if let Some(cur) = cpu.cur_freq_khz {
+            let cur_s = format_freq(cur);
+            match (cpu.min_freq_khz, cpu.max_freq_khz) {
+                (Some(min), Some(max)) => {
+                    let min_s = format_freq(min);
+                    let max_s = format_freq(max);
+                    println!("  Current: {cur_s} (range: {min_s} - {max_s})");
+                }
+                _ => {
+                    println!("  Current: {cur_s}");
+                }
+            }
+        }
+        if let Some(epp) = &cpu.epp {
+            println!("  Energy preference: {epp}");
+            if verbose {
+                if let Some(avail) = &cpu.epp_available {
+                    println!("    Available: {avail}");
+                }
+            }
+        }
+        // Python line 991 always prints CPU cores from cpu_info; mirror
+        // that here even when cpu_count is zero (which can happen if
+        // /sys/devices/system/cpu was unreadable but cpufreq fields
+        // somehow populated).
+        println!("  CPU cores: {}", cpu.cpu_count);
+    }
+
+    // [TEMPERATURES]
+    if !report.temperatures.is_empty() {
+        println!();
+        println!("[TEMPERATURES]");
+        println!("{}", "-".repeat(30));
+        for t in &report.temperatures {
+            println!("  {}: {:.1}°C", t.label, t.temp_c);
+        }
+    }
+
+    // [THERMAL THROTTLING]
+    if report.throttle.throttle_count > 0 {
+        println!();
+        println!("[THERMAL THROTTLING]");
+        println!("{}", "-".repeat(30));
+        println!(
+            "  Historical throttle events: {}",
+            report.throttle.throttle_count
+        );
+    }
+
+    println!();
+    println!("{}", "=".repeat(50));
 }

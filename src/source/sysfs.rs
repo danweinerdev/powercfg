@@ -330,8 +330,6 @@ pub fn read_usb_wakeup_devices(root: &SysRoot) -> Result<Vec<UsbWakeDevice>, Sou
 /// (headless desktop), returns `Ok(vec![])` — matches Python line 774's
 /// `if ps_path.exists():` guard. If the directory exists but `read_dir`
 /// fails (permission denied, transient errors), the error propagates.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 pub fn read_power_supplies(root: &SysRoot) -> Result<Vec<PowerSupply>, SourceError> {
     let parent = root.join("sys/class/power_supply");
     if !parent.exists() {
@@ -381,8 +379,6 @@ pub fn read_power_supplies(root: &SysRoot) -> Result<Vec<PowerSupply>, SourceErr
 ///
 /// `cpu_count` matches the Python tool's `d.name.startswith("cpu") and
 /// d.name[3:].isdigit()` filter (regex-free).
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 pub fn read_cpu_freq_info(root: &SysRoot) -> Result<CpuFreqInfo, SourceError> {
     let cpu_root = root.join("sys/devices/system/cpu");
     if !cpu_root.exists() {
@@ -438,8 +434,6 @@ pub fn read_cpu_freq_info(root: &SysRoot) -> Result<CpuFreqInfo, SourceError> {
 ///
 /// Per-chip and per-temp read errors are tolerated (logged at debug,
 /// reading continues). Missing parent → `Ok(vec![])` (Python line 868).
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 pub fn read_thermal_info(root: &SysRoot) -> Result<Vec<ThermalReading>, SourceError> {
     let parent = root.join("sys/class/hwmon");
     if !parent.exists() {
@@ -550,8 +544,6 @@ pub fn read_thermal_info(root: &SysRoot) -> Result<Vec<ThermalReading>, SourceEr
 /// the wrong thing. The historical `throttle_count` is the only
 /// meaningful current/historical signal at this layer, so the printer
 /// in 2.4 only renders that.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 pub fn read_throttle_status(root: &SysRoot) -> Result<ThrottleStatus, SourceError> {
     let mut status = ThrottleStatus::default();
 

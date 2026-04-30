@@ -1,0 +1,19 @@
+---
+source: tests/energy.rs
+expression: out
+---
+ENERGY STATUS
+==================================================
+
+[POWER SUPPLIES]
+------------------------------
+  No power supplies detected (desktop system)
+
+[CPU FREQUENCY]
+------------------------------
+  Driver: intel_pstate
+  Governor: performance
+  Current: 2.40 GHz (range: 800 MHz - 4.20 GHz)
+  CPU cores: 1
+
+==================================================

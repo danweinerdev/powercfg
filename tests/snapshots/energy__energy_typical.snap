@@ -1,0 +1,26 @@
+---
+source: tests/energy.rs
+expression: out
+---
+ENERGY STATUS
+==================================================
+
+[POWER SUPPLIES]
+------------------------------
+  AC: Discharging
+  BAT0: Discharging (87%) - 12.5W
+
+[CPU FREQUENCY]
+------------------------------
+  Driver: amd-pstate-epp
+  Governor: powersave
+  Current: 3.40 GHz (range: 400 MHz - 4.80 GHz)
+  Energy preference: balance_performance
+  CPU cores: 16
+
+[TEMPERATURES]
+------------------------------
+  Tctl: 52.4°C
+  CPU: 50.1°C
+
+==================================================

@@ -5,9 +5,6 @@
 //! renders as `"X MHz"` (no decimals), otherwise `"X kHz"`.
 
 /// Format a frequency in kHz as a human-readable string.
-// TODO(phase-2): consumed by cmd::energy (CPU current/min/max). Drop the
-// allow when 2.x lands.
-#[allow(dead_code)]
 pub fn format_freq(khz: u64) -> String {
     if khz >= 1_000_000 {
         // Python: f"{khz / 1000000:.2f} GHz" — two decimal places, half-even

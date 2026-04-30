@@ -3,10 +3,8 @@
 //! Phase 5 adds `#[derive(Serialize)]`; left bare for now to mirror the
 //! pattern in `model::sleepstates` and `model::devicequery`.
 //!
-//! All five types are populated by `cmd::energy::run` (lands in 2.4) from
-//! the `source::sysfs` readers added alongside this module. The
-//! `#[allow(dead_code)]` annotations on the field-bearing types come off in
-//! 2.4 when the printer reads them.
+//! All five types are populated by `cmd::energy::run` from the
+//! `source::sysfs` readers added alongside this module.
 
 /// One row from `/sys/class/power_supply/<name>/`.
 ///
@@ -15,12 +13,12 @@
 /// given supply (an AC adapter has no `capacity`; some batteries don't
 /// expose `power_now`). `name` is always present — it's the directory
 /// name the walker found.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PowerSupply {
-    pub name: String,             // "BAT0", "AC", etc.
-    pub kind: Option<String>,     // "Battery", "Mains", ...
+    pub name: String, // "BAT0", "AC", etc.
+    // TODO(phase-5): consumed by JSON output; text printer doesn't use it.
+    #[allow(dead_code)]
+    pub kind: Option<String>, // "Battery", "Mains", ...
     pub status: Option<String>,   // "Discharging", "Full", ...
     pub capacity_pct: Option<u8>, // 0..=100
     pub level: Option<String>,    // "Normal", "Low", ...
@@ -33,8 +31,6 @@ pub struct PowerSupply {
 /// driver/governor/freq settings are uniform across cores. `cpu_count` is
 /// the number of `cpuN` directories (regex-free `cpu` + all-digits suffix
 /// match) under `/sys/devices/system/cpu`.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct CpuFreqInfo {
     pub driver: Option<String>,   // "amd-pstate-epp", "intel_pstate", ...
@@ -52,12 +48,12 @@ pub struct CpuFreqInfo {
 /// file is present). Mirrors the Python tool's narrow filter to the
 /// `k10temp`/`coretemp`/`zenpower` chips — other hwmon entries (NVMe,
 /// fans, GPUs) are skipped so the section stays CPU-thermals only.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThermalReading {
-    pub label: String,  // "Tctl", "Tdie", or "CPU" fallback
-    pub temp_c: f64,    // converted from millidegrees
+    pub label: String, // "Tctl", "Tdie", or "CPU" fallback
+    pub temp_c: f64,   // converted from millidegrees
+    // TODO(phase-5): consumed by JSON output; text printer doesn't use it.
+    #[allow(dead_code)]
     pub source: String, // hwmon "name" file value: "k10temp", "coretemp", ...
 }
 
@@ -76,16 +72,12 @@ pub struct ThermalReading {
 /// `Not throttled` regardless of actual thermal state, so the field is
 /// dropped here and the printer relies on `throttle_count > 0` as the
 /// only meaningful signal.
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThrottleStatus {
     pub throttle_count: u64, // sum of cpu*/thermal_throttle/package_throttle_count
 }
 
-/// Top-level report consumed by `format::text::print_energy` (lands 2.4).
-// TODO(phase-2.4): wired by cmd::energy::run.
-#[allow(dead_code)]
+/// Top-level report consumed by `format::text::print_energy`.
 #[derive(Debug, Default)]
 pub struct EnergyReport {
     pub supplies: Vec<PowerSupply>,
