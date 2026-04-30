@@ -15,8 +15,8 @@ use crate::source::exec::ExecError;
 /// `Subprocess` wraps the typed `ExecError` from `source::exec`, so a
 /// caller that uses `run_with_timeout(...)?` automatically bubbles
 /// `NotFound`, `Timeout`, and generic `Io` failures up as
-/// `SourceError::Subprocess(_)`. `Dbus` still carries a placeholder
-/// `String` until Phase 3.2 swaps it for `zbus::Error`.
+/// `SourceError::Subprocess(_)`. `Dbus` wraps `zbus::Error` so callers
+/// that use `?` from any `source::dbus` function bubble cleanly.
 #[derive(Debug, Error)]
 pub enum SourceError {
     /// Filesystem I/O error (sysfs/procfs read).
@@ -37,15 +37,10 @@ pub enum SourceError {
     #[error("not found: {0}")]
     NotFound(String),
 
-    /// D-Bus call failed.
-    ///
-    /// Phase 3.2 changes the payload to `zbus::Error`; the variant is
-    /// declared now so Phase 2 can return `Result<T, SourceError>` from
-    /// sysfs/procfs sources without churning the enum later.
-    // TODO(phase-3.2): constructed by source::dbus.
-    #[allow(dead_code)]
+    /// D-Bus call failed. Constructed by `source::dbus` via
+    /// `?`-propagation from `zbus::Error`.
     #[error("dbus: {0}")]
-    Dbus(String),
+    Dbus(#[from] zbus::Error),
 
     /// Subprocess invocation failed.
     ///
@@ -82,8 +77,28 @@ mod tests {
 
     #[test]
     fn dbus_variant_displays_with_dbus_prefix() {
-        let err = SourceError::Dbus("connection refused".into());
-        assert_eq!(err.to_string(), "dbus: connection refused");
+        // `zbus::Error::Unsupported` is one of the few variants with no
+        // payload of its own — keeps the Display assertion stable across
+        // zbus versions.
+        let err = SourceError::Dbus(zbus::Error::Unsupported);
+        assert!(
+            err.to_string().starts_with("dbus: "),
+            "expected dbus prefix, got {err}",
+        );
+    }
+
+    #[test]
+    fn from_zbus_error_via_question_mark() {
+        fn call() -> Result<(), SourceError> {
+            // ? should convert zbus::Error → SourceError::Dbus via #[from].
+            Err(zbus::Error::Unsupported)?;
+            Ok(())
+        }
+        let err = call().expect_err("should fail");
+        assert!(
+            matches!(err, SourceError::Dbus(_)),
+            "expected SourceError::Dbus, got {err:?}",
+        );
     }
 
     #[test]

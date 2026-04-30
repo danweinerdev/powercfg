@@ -6,6 +6,7 @@
 //! `.unwrap_or_default()` / `.ok()` per call site to choose presentation
 //! behavior. See `Designs/RustRewrite/README.md` Decision 7.
 
+pub mod dbus;
 pub mod error;
 pub mod exec;
 pub mod procfs;
