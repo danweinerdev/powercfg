@@ -313,43 +313,42 @@ pub fn print_energy(report: &EnergyReport, verbose: bool) {
     }
 
     // [CPU FREQUENCY]
+    let cpu = &report.cpu;
     println!();
     println!("[CPU FREQUENCY]");
     println!("{}", "-".repeat(30));
-    if let Some(cpu) = &report.cpu {
-        if let Some(driver) = &cpu.driver {
-            println!("  Driver: {driver}");
-        }
-        if let Some(governor) = &cpu.governor {
-            println!("  Governor: {governor}");
-        }
-        if let Some(cur) = cpu.cur_freq_khz {
-            let cur_s = format_freq(cur);
-            match (cpu.min_freq_khz, cpu.max_freq_khz) {
-                (Some(min), Some(max)) => {
-                    let min_s = format_freq(min);
-                    let max_s = format_freq(max);
-                    println!("  Current: {cur_s} (range: {min_s} - {max_s})");
-                }
-                _ => {
-                    println!("  Current: {cur_s}");
-                }
-            }
-        }
-        if let Some(epp) = &cpu.epp {
-            println!("  Energy preference: {epp}");
-            if verbose {
-                if let Some(avail) = &cpu.epp_available {
-                    println!("    Available: {avail}");
-                }
-            }
-        }
-        // Python line 991 always prints CPU cores from cpu_info; mirror
-        // that here even when cpu_count is zero (which can happen if
-        // /sys/devices/system/cpu was unreadable but cpufreq fields
-        // somehow populated).
-        println!("  CPU cores: {}", cpu.cpu_count);
+    if let Some(driver) = &cpu.driver {
+        println!("  Driver: {driver}");
     }
+    if let Some(governor) = &cpu.governor {
+        println!("  Governor: {governor}");
+    }
+    if let Some(cur) = cpu.cur_freq_khz {
+        let cur_s = format_freq(cur);
+        match (cpu.min_freq_khz, cpu.max_freq_khz) {
+            (Some(min), Some(max)) => {
+                let min_s = format_freq(min);
+                let max_s = format_freq(max);
+                println!("  Current: {cur_s} (range: {min_s} - {max_s})");
+            }
+            _ => {
+                println!("  Current: {cur_s}");
+            }
+        }
+    }
+    if let Some(epp) = &cpu.epp {
+        println!("  Energy preference: {epp}");
+        if verbose {
+            if let Some(avail) = &cpu.epp_available {
+                println!("    Available: {avail}");
+            }
+        }
+    }
+    // Python line 991 always prints CPU cores from cpu_info; mirror
+    // that here even when cpu_count is zero (which can happen if
+    // /sys/devices/system/cpu was unreadable but cpufreq fields
+    // somehow populated).
+    println!("  CPU cores: {}", cpu.cpu_count);
 
     // [TEMPERATURES]
     if !report.temperatures.is_empty() {

@@ -78,10 +78,17 @@ pub struct ThrottleStatus {
 }
 
 /// Top-level report consumed by `format::text::print_energy`.
+///
+/// `cpu` is non-optional because `read_cpu_freq_info` returns
+/// `Ok(CpuFreqInfo::default())` rather than `Err` when the cpufreq dir
+/// is absent — a default `CpuFreqInfo` already represents "nothing
+/// known about cpufreq" with all `Option`s `None` and `cpu_count` 0.
+/// Wrapping it in another `Option` would just be a defensive layer
+/// that never fires.
 #[derive(Debug, Default)]
 pub struct EnergyReport {
     pub supplies: Vec<PowerSupply>,
-    pub cpu: Option<CpuFreqInfo>, // None if cpufreq unavailable (rare)
+    pub cpu: CpuFreqInfo,
     pub temperatures: Vec<ThermalReading>,
     pub throttle: ThrottleStatus,
 }

@@ -66,45 +66,39 @@ fn energy_headless() {
     // Headless: no power_supply tree, no hwmon, single CPU with
     // intel_pstate but no EPP. The `No power supplies detected` line
     // fires; both `Energy preference` and `[TEMPERATURES]` are absent.
-    let assertion = powercfg()
-        .env("POWERCFG_SYSROOT", "tests/fixtures/sys-headless")
-        .arg("energy")
-        .assert()
-        .success();
-    let out = stdout(&assertion);
-    assert!(
-        out.contains("No power supplies detected (desktop system)"),
-        "headless output should include the desktop fallback line: {out}",
-    );
-    assert!(
-        !out.contains("[TEMPERATURES]"),
-        "headless output should not include the temperatures section: {out}",
-    );
-    assert!(
-        !out.contains("Energy preference"),
-        "headless intel_pstate fixture has no EPP; line should be absent: {out}",
-    );
-    assert!(
-        !out.contains("[THERMAL THROTTLING]"),
-        "headless has no throttle counter; section should be suppressed: {out}",
-    );
-    insta::assert_snapshot!("energy_headless", out);
-}
-
-#[test]
-fn energy_headless_verbose() {
-    // Without `epp_available` exposed by the kernel, the `Available:`
-    // line is absent even in verbose mode (Python line 988-989 guards
-    // on both `args.verbose` AND `"epp_available" in cpu_info`).
-    let assertion = powercfg()
-        .env("POWERCFG_SYSROOT", "tests/fixtures/sys-headless")
-        .args(["energy", "-v"])
-        .assert()
-        .success();
-    let out = stdout(&assertion);
-    assert!(
-        !out.contains("Available:"),
-        "headless verbose output has no EPP, so no Available line: {out}",
-    );
-    insta::assert_snapshot!("energy_headless_verbose", out);
+    //
+    // -v mode produces byte-identical output here (the kernel didn't
+    // expose epp_available, so the `Available:` line stays absent),
+    // so we run both modes against the same snapshot rather than
+    // duplicating the snapshot file.
+    for verbose_args in [&[][..], &["-v"][..]] {
+        let assertion = powercfg()
+            .env("POWERCFG_SYSROOT", "tests/fixtures/sys-headless")
+            .arg("energy")
+            .args(verbose_args)
+            .assert()
+            .success();
+        let out = stdout(&assertion);
+        assert!(
+            out.contains("No power supplies detected (desktop system)"),
+            "headless output should include the desktop fallback line: {out}",
+        );
+        assert!(
+            !out.contains("[TEMPERATURES]"),
+            "headless output should not include the temperatures section: {out}",
+        );
+        assert!(
+            !out.contains("Energy preference"),
+            "headless intel_pstate fixture has no EPP; line should be absent: {out}",
+        );
+        assert!(
+            !out.contains("Available:"),
+            "headless has no epp_available; Available line stays absent in both modes: {out}",
+        );
+        assert!(
+            !out.contains("[THERMAL THROTTLING]"),
+            "headless has no throttle counter; section should be suppressed: {out}",
+        );
+        insta::assert_snapshot!("energy_headless", out);
+    }
 }

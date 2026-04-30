@@ -31,7 +31,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     match sysfs::read_cpu_freq_info(&args.root) {
-        Ok(c) => report.cpu = Some(c),
+        Ok(c) => report.cpu = c,
         Err(e) => tracing::debug!("read_cpu_freq_info: {e}"),
     }
 
