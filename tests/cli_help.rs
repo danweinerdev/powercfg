@@ -96,6 +96,10 @@ fn sleepstates_runs_cleanly() {
         stdout.contains("Unable to read sleep states"),
         "sleepstates with empty sysroot should fall back to the empty-data message: {stdout}",
     );
+    assert!(
+        stdout.contains("Unable to read memory sleep mode"),
+        "sleepstates with empty sysroot should fall back on memory section too: {stdout}",
+    );
 }
 
 #[test]

@@ -86,15 +86,25 @@ pub fn print_sleepstates(report: &SleepStatesReport, verbose: bool) {
     }
 
     // [MEMORY SLEEP MODE]
+    //
+    // Diverges from Python parity: the Python tool prints the section header
+    // even when /sys/power/mem_sleep is unreadable (no fallback message),
+    // mirrored from its [SLEEP STATES] fallback inconsistently. Adding the
+    // fallback message here makes the failure mode legible without changing
+    // the happy-path output.
     println!();
     println!("[MEMORY SLEEP MODE]");
     println!("{}", "-".repeat(30));
-    if let Some(current) = &report.mem_current {
-        let desc = lookup_mem_mode(current).unwrap_or(current.as_str());
-        println!("  Current: {current} - {desc}");
-    }
-    if !report.mem_modes.is_empty() {
-        println!("  Available: {}", report.mem_modes.join(", "));
+    if report.mem_current.is_none() && report.mem_modes.is_empty() {
+        println!("  Unable to read memory sleep mode");
+    } else {
+        if let Some(current) = &report.mem_current {
+            let desc = lookup_mem_mode(current).unwrap_or(current.as_str());
+            println!("  Current: {current} - {desc}");
+        }
+        if !report.mem_modes.is_empty() {
+            println!("  Available: {}", report.mem_modes.join(", "));
+        }
     }
 
     // [HIBERNATION MODE] — only when "disk" is in the supported states.

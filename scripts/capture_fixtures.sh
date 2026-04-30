@@ -90,14 +90,30 @@ cat <<'EOF'
 # Before committing this fixture, scrub identifiers from the captured
 # files. The most likely places to find them:
 #
+# Text-format identifier files:
 #   $TARGET/sys/bus/usb/devices/*/{manufacturer,product,serial}
 #   $TARGET/sys/bus/pci/devices/*/{label,*_id}
 #   $TARGET/sys/class/power_supply/*/{manufacturer,model_name,serial_number}
 #   $TARGET/sys/devices/.../macaddress
 #
-# A quick `grep -r '<your name or serial fragment>' $TARGET` is a
-# reasonable spot-check. MAC addresses, machine UUIDs, and BIOS serials
-# have no testing value — replace them with deterministic placeholders
-# (e.g. "REDACTED") rather than deleting the files, so the parsers still
-# exercise the read path.
+# Binary blobs that may contain hardware-identifying bytes (MAC ranges,
+# device serials, capability strings) — none of these are read by
+# powercfg, so the safest action is to delete them outright rather than
+# trying to redact in place:
+#   $TARGET/sys/bus/pci/devices/*/config           (256+ bytes per device)
+#   $TARGET/sys/bus/pci/devices/*/resource[0-9]*   (BAR contents)
+#   $TARGET/sys/bus/pci/devices/*/rom              (option ROM dumps)
+#   $TARGET/sys/bus/usb/devices/*/descriptors
+#
+# Quick scrub commands (run from $TARGET):
+#   find . -name 'config' -path '*pci/devices*' -delete
+#   find . -name 'resource[0-9]*' -path '*pci/devices*' -delete
+#   find . -name 'rom' -path '*pci/devices*' -delete
+#   find . -name 'descriptors' -path '*usb/devices*' -delete
+#
+# Then `grep -r '<your name or serial fragment>' .` as a spot-check.
+# MAC addresses, machine UUIDs, and BIOS serials have no testing value —
+# in text files, replace them with deterministic placeholders (e.g.
+# "REDACTED") rather than deleting, so the parsers still exercise the
+# read path.
 EOF

@@ -70,6 +70,11 @@ pub fn read_image_size_bytes(root: &SysRoot) -> Result<u64, SourceError> {
 /// returns `(vec![], None)`. Unmatched/partial brackets fall back to the
 /// raw token, matching the Python `startswith("[") and endswith("]")`
 /// guard.
+///
+/// If multiple bracketed tokens appear (which the kernel never emits in
+/// practice but the parser doesn't reject), the LAST one wins as
+/// `current`. All bracketed tokens still appear in `modes` with brackets
+/// stripped.
 fn parse_bracketed_modes(s: &str) -> (Vec<String>, Option<String>) {
     let mut modes = Vec::new();
     let mut current = None;
@@ -131,6 +136,16 @@ mod tests {
         let (modes, current) = parse_bracketed_modes("  [s2idle]   deep  ");
         assert_eq!(modes, vec!["s2idle".to_string(), "deep".to_string()]);
         assert_eq!(current.as_deref(), Some("s2idle"));
+    }
+
+    #[test]
+    fn parse_bracketed_modes_multiple_brackets_last_wins() {
+        // The kernel never emits two bracketed tokens, but the parser
+        // doesn't reject them — pin the last-write-wins rule explicitly
+        // so a future contributor doesn't have to reverse-engineer it.
+        let (modes, current) = parse_bracketed_modes("[s2idle] [deep]");
+        assert_eq!(modes, vec!["s2idle".to_string(), "deep".to_string()]);
+        assert_eq!(current.as_deref(), Some("deep"));
     }
 
     #[test]
