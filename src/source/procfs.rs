@@ -163,9 +163,6 @@ fn parse_swaps(content: &str) -> Vec<SwapDevice> {
 /// - Returns `Err(SourceError::Io)` only if `<root>/proc/` itself can't
 ///   be enumerated, which is virtually impossible on a running Linux
 ///   system but happens in tests when the fixture omits `proc/`.
-// TODO(phase-3.4): first production caller is `cmd::requests` for VM
-// detection; drop the allow once wired up.
-#[allow(dead_code)]
 pub fn find_processes_by_comm(
     root: &SysRoot,
     names: &[&str],

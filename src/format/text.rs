@@ -4,9 +4,12 @@
 //! reasonable; integration tests assert this via `insta` snapshots. New
 //! printers land here per-subcommand as Phase 1+ implements each handler.
 
+use std::io::Write;
+
 use crate::format::freq::format_freq;
 use crate::model::devicequery::DeviceQueryReport;
 use crate::model::energy::EnergyReport;
+use crate::model::requests::RequestsReport;
 use crate::model::sleepstates::SleepStatesReport;
 use crate::paths::SysRoot;
 use crate::source::sysfs;
@@ -373,4 +376,275 @@ pub fn print_energy(report: &EnergyReport, verbose: bool) {
 
     println!();
     println!("{}", "=".repeat(50));
+}
+
+/// Map an inhibitor's resolved `comm` string to the human-readable VM
+/// label the printer renders. `comm` values come from
+/// `source::procfs::find_processes_by_comm` so they're already trimmed
+/// and 15-char-truncated.
+fn vm_label(comm: &str) -> &str {
+    if comm.starts_with("qemu") {
+        "QEMU/KVM VM"
+    } else if comm == "VBoxHeadless" {
+        "VirtualBox VM"
+    } else {
+        comm
+    }
+}
+
+/// Print a [`RequestsReport`] in the Python tool's text format
+/// (`cmd_requests`, powercfg.py 1163-1232).
+///
+/// Takes a `&mut dyn Write` rather than calling `println!` so unit
+/// tests can capture and snapshot the output without spawning the
+/// binary or going through OS-level stdout redirection. The rest of
+/// the printers in this module use `println!` because their
+/// integration tests use `assert_cmd` against the binary; the
+/// `requests` report is built in-process from D-Bus + procfs +
+/// userspace data, none of which can be cleanly faked through the
+/// binary's environment, so it gets a writer parameter instead.
+///
+/// Section ordering and behavior:
+/// - `[SYSTEM INHIBITORS]`: iterates ALL inhibitors but prints only
+///   those whose `what` field contains `sleep` or `idle`
+///   (case-insensitive). Empty list (no inhibitors at all) renders
+///   `None.`. The summary footer counts the unfiltered list.
+/// - `[KERNEL WAKE LOCKS]`: one per line; empty → `None.`.
+/// - `[AUDIO STREAMS]`: per-stream id+client; empty → `None.`.
+/// - `[VIRTUAL MACHINES]`: maps `comm` to a friendly label
+///   (`qemu*` → `QEMU/KVM VM`, `VBoxHeadless` → `VirtualBox VM`,
+///   otherwise raw); empty → `None.`.
+/// - `[USB WAKEUP DEVICES]`: only if `verbose=true`; not counted in
+///   the summary. Empty → `None.`.
+/// - Trailing summary: `Total sleep blockers found: N` (sum of the
+///   unfiltered inhibitor count + wake_locks + audio_streams + vms,
+///   matches Python line 1227) or `No active sleep blockers detected.`
+///   when total is zero.
+pub fn print_requests(
+    report: &RequestsReport,
+    verbose: bool,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(out, "POWER REQUEST STATUS")?;
+    writeln!(out, "{}", "=".repeat(50))?;
+
+    // [SYSTEM INHIBITORS]
+    writeln!(out)?;
+    writeln!(out, "[SYSTEM INHIBITORS]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    if report.inhibitors.is_empty() {
+        writeln!(out, "  None.")?;
+    } else {
+        // Display filter: only sleep/idle inhibitors render. Other
+        // entries are skipped here but counted in the summary footer
+        // (matches Python lines 1175 + 1227). The fallback `None.`
+        // line above only fires when the input list is empty — a
+        // non-empty list whose entries all fail this filter still
+        // renders nothing under the header (matches Python).
+        for inh in &report.inhibitors {
+            let blocks = inh.what.to_lowercase();
+            if !(blocks.contains("sleep") || blocks.contains("idle")) {
+                continue;
+            }
+            writeln!(out, "  Process: {} (PID: {})", inh.comm, inh.pid)?;
+            // Diverges from Python: `systemd-inhibit --list` resolves
+            // numeric uid to a username via NSS; logind's D-Bus
+            // ListInhibitors API only exposes uid as a u32. Resolving
+            // via getpwuid_r adds a libc dependency for one column in
+            // a status-only command; the cost-benefit isn't worth it.
+            // Render the numeric uid instead.
+            writeln!(out, "    User: {}", inh.uid)?;
+            writeln!(out, "    Blocks: {}", inh.what)?;
+            writeln!(out, "    Reason: {}", inh.why)?;
+            writeln!(out)?;
+        }
+    }
+
+    // [KERNEL WAKE LOCKS]
+    writeln!(out)?;
+    writeln!(out, "[KERNEL WAKE LOCKS]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    if report.wake_locks.is_empty() {
+        writeln!(out, "  None.")?;
+    } else {
+        for lock in &report.wake_locks {
+            writeln!(out, "  {lock}")?;
+        }
+    }
+
+    // [AUDIO STREAMS]
+    writeln!(out)?;
+    writeln!(out, "[AUDIO STREAMS]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    if report.audio_streams.is_empty() {
+        writeln!(out, "  None.")?;
+    } else {
+        for stream in &report.audio_streams {
+            writeln!(out, "  Stream ID: {}", stream.id)?;
+            writeln!(out, "    Client: {}", stream.client)?;
+        }
+    }
+
+    // [VIRTUAL MACHINES]
+    writeln!(out)?;
+    writeln!(out, "[VIRTUAL MACHINES]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    if report.vms.is_empty() {
+        writeln!(out, "  None.")?;
+    } else {
+        for vm in &report.vms {
+            writeln!(out, "  {} (PID: {})", vm_label(&vm.comm), vm.pid)?;
+        }
+    }
+
+    // [USB WAKEUP DEVICES] — verbose only, not counted in summary.
+    if verbose {
+        writeln!(out)?;
+        writeln!(out, "[USB WAKEUP DEVICES]")?;
+        writeln!(out, "{}", "-".repeat(30))?;
+        if report.usb_wakeup.is_empty() {
+            writeln!(out, "  None.")?;
+        } else {
+            for dev in &report.usb_wakeup {
+                writeln!(out, "  {} ({})", dev.name, dev.device)?;
+            }
+        }
+    }
+
+    // Trailing summary. Counts the UNFILTERED inhibitor list so a
+    // shutdown/handle-power-key inhibitor that doesn't display still
+    // shows up in the total — matches Python line 1227's
+    // `len(inhibitors)` against the same unfiltered list.
+    writeln!(out)?;
+    writeln!(out, "{}", "=".repeat(50))?;
+    let total = report.inhibitors.len()
+        + report.wake_locks.len()
+        + report.audio_streams.len()
+        + report.vms.len();
+    if total > 0 {
+        writeln!(out, "Total sleep blockers found: {total}")?;
+    } else {
+        writeln!(out, "No active sleep blockers detected.")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::devicequery::UsbWakeDevice;
+    use crate::model::requests::{AudioStream, Inhibitor, ProcessInfo, RequestsReport};
+
+    /// Helper: build a typical report with one sleep/idle inhibitor
+    /// (renders) and one shutdown inhibitor (hidden but counted).
+    fn typical_report() -> RequestsReport {
+        RequestsReport {
+            inhibitors: vec![
+                Inhibitor {
+                    who: "firefox".into(),
+                    why: "Playing audio".into(),
+                    what: "sleep:idle".into(),
+                    mode: "block".into(),
+                    uid: 1000,
+                    pid: 12345,
+                    comm: "firefox".into(),
+                },
+                Inhibitor {
+                    who: "gdm".into(),
+                    why: "Saving state".into(),
+                    what: "shutdown".into(),
+                    mode: "block".into(),
+                    uid: 0,
+                    pid: 999,
+                    comm: "gdm-session".into(),
+                },
+            ],
+            wake_locks: vec!["audio".into()],
+            audio_streams: vec![
+                AudioStream {
+                    id: "123".into(),
+                    client: "Firefox".into(),
+                },
+                AudioStream {
+                    id: "124".into(),
+                    client: "Spotify".into(),
+                },
+            ],
+            vms: vec![ProcessInfo {
+                pid: 5678,
+                comm: "qemu-system-x86".into(),
+            }],
+            usb_wakeup: vec![],
+        }
+    }
+
+    /// Display loop hides the `shutdown` inhibitor but the summary
+    /// counts it: total = 2 inhibitors + 1 wake_lock + 2 audio + 1 vm = 6.
+    #[test]
+    fn print_requests_typical_filters_inhibitors_but_counts_all() {
+        let report = typical_report();
+        let mut out = Vec::new();
+        print_requests(&report, false, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.contains("Total sleep blockers found: 6"),
+            "summary should count unfiltered inhibitors: {s}",
+        );
+        assert!(
+            !s.contains("gdm-session"),
+            "shutdown inhibitor should not appear in display: {s}",
+        );
+        assert!(
+            !s.contains("[USB WAKEUP DEVICES]"),
+            "non-verbose run should omit USB section: {s}",
+        );
+        insta::assert_snapshot!("print_requests_typical", s);
+    }
+
+    /// Verbose adds the USB wakeup section but the count stays at 6
+    /// (USB devices are not summed in the total).
+    #[test]
+    fn print_requests_typical_verbose_adds_usb_section() {
+        let mut report = typical_report();
+        report.usb_wakeup = vec![UsbWakeDevice {
+            device: "1-2".into(),
+            name: "Logitech USB Receiver".into(),
+        }];
+        let mut out = Vec::new();
+        print_requests(&report, true, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.contains("Total sleep blockers found: 6"),
+            "USB devices must not bump the count: {s}",
+        );
+        assert!(
+            s.contains("[USB WAKEUP DEVICES]"),
+            "verbose run should include USB section: {s}",
+        );
+        assert!(
+            s.contains("Logitech USB Receiver (1-2)"),
+            "USB device should render as 'name (device)': {s}",
+        );
+        insta::assert_snapshot!("print_requests_typical_verbose", s);
+    }
+
+    /// All-empty report: every section shows `None.` and the trailing
+    /// line collapses to `No active sleep blockers detected.` with no
+    /// count (matches Python's else branch).
+    #[test]
+    fn print_requests_empty_renders_no_blockers_message() {
+        let report = RequestsReport::default();
+        let mut out = Vec::new();
+        print_requests(&report, false, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.contains("No active sleep blockers detected."),
+            "empty report should print the no-blockers line: {s}",
+        );
+        assert!(
+            !s.contains("Total sleep blockers found"),
+            "empty report should NOT include the count line: {s}",
+        );
+        insta::assert_snapshot!("print_requests_empty", s);
+    }
 }

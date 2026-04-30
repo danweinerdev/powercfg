@@ -1,0 +1,33 @@
+---
+source: src/format/text.rs
+assertion_line: 601
+expression: s
+---
+POWER REQUEST STATUS
+==================================================
+
+[SYSTEM INHIBITORS]
+------------------------------
+  Process: firefox (PID: 12345)
+    User: 1000
+    Blocks: sleep:idle
+    Reason: Playing audio
+
+
+[KERNEL WAKE LOCKS]
+------------------------------
+  audio
+
+[AUDIO STREAMS]
+------------------------------
+  Stream ID: 123
+    Client: Firefox
+  Stream ID: 124
+    Client: Spotify
+
+[VIRTUAL MACHINES]
+------------------------------
+  QEMU/KVM VM (PID: 5678)
+
+==================================================
+Total sleep blockers found: 6

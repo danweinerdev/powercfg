@@ -74,9 +74,6 @@ pub fn read_image_size_bytes(root: &SysRoot) -> Result<u64, SourceError> {
 /// rather than surfacing as errors. Other I/O failures (e.g., a real
 /// disk fault) propagate as `SourceError::Io` so they remain
 /// observable at debug log level.
-// TODO(phase-3.4): first production caller is `cmd::requests`; drop
-// the allow once wired up.
-#[allow(dead_code)]
 pub fn read_kernel_wake_locks(root: &SysRoot) -> Result<Vec<String>, SourceError> {
     use std::io::ErrorKind::{NotFound, PermissionDenied};
     let path = root.join("sys/power/wake_lock");

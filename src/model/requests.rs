@@ -1,9 +1,12 @@
 //! Owning data structures for the `requests` subcommand.
 //!
-//! `RequestsReport` lands in task 3.4; for 3.2 we ship the leaf
-//! `Inhibitor` type that `source::dbus::list_inhibitors` produces.
-//! Task 3.3 adds `ProcessInfo` (used by the `/proc` walk for VM
-//! detection) and `AudioStream` (used by the `pactl` shellout).
+//! `RequestsReport` is the top-level report consumed by
+//! `format::text::print_requests`. The leaf types are produced by
+//! `source::dbus::list_inhibitors` (3.2), `source::procfs::find_processes_by_comm`
+//! and `source::userspace::list_audio_streams` (3.3), and
+//! `source::sysfs::read_kernel_wake_locks` / `read_usb_wakeup_devices` (2.2).
+
+use crate::model::devicequery::UsbWakeDevice;
 
 /// One sleep/idle inhibitor as returned by logind's `ListInhibitors`.
 ///
@@ -12,8 +15,6 @@
 /// column-compatible with the Python tool's `Process: <comm> (PID: <pid>)`
 /// line. If the proc lookup fails (process gone, permission denied), `comm`
 /// falls back to the `who` field.
-// TODO(phase-3.4): consumed by `cmd::requests`; drop allow once wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inhibitor {
     /// Service name from logind, e.g. "GNOME Settings Daemon".
@@ -31,14 +32,16 @@ pub struct Inhibitor {
     pub comm: String,
 }
 
-#[allow(dead_code)] // TODO(phase-3.4): consumed by `cmd::requests`.
 impl Inhibitor {
     /// Build an `Inhibitor` from logind's `ListInhibitors` D-Bus reply
-    /// tuple `(who, why, what, mode, uid, pid)`. Resolves `comm` from
-    /// `/proc/<pid>/comm`; on failure (process gone, permission denied)
-    /// falls back to a copy of `who`.
+    /// tuple `(what, who, why, mode, uid, pid)`. The wire signature is
+    /// `a(ssssuu)` and the field order follows the systemd docs at
+    /// <https://systemd.io/INHIBITOR_LOCKS> — the same order
+    /// `Inhibit()` accepts. Resolves `comm` from `/proc/<pid>/comm`;
+    /// on failure (process gone, permission denied) falls back to a
+    /// copy of `who`.
     pub fn from_dbus_tuple(t: (String, String, String, String, u32, u32)) -> Self {
-        let (who, why, what, mode, uid, pid) = t;
+        let (what, who, why, mode, uid, pid) = t;
         let comm = resolve_comm(pid).unwrap_or_else(|| who.clone());
         Self {
             who,
@@ -71,8 +74,6 @@ fn resolve_comm(pid: u32) -> Option<String> {
 /// the VM-detection path in `cmd::requests` (3.4). The `comm` field is
 /// the kernel's truncated 15-character process name (the value in
 /// `/proc/<pid>/comm`), not a full executable path.
-// TODO(phase-3.4): consumed by `cmd::requests`; drop allow once wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: u32,
@@ -87,12 +88,28 @@ pub struct ProcessInfo {
 /// practice but typed as `String` to match the raw column from
 /// `pactl`'s output). `client` is the client name or `"Unknown"` if
 /// the column is missing.
-// TODO(phase-3.4): consumed by `cmd::requests`; drop allow once wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioStream {
     pub id: String,
     pub client: String,
+}
+
+/// Top-level data for the `requests` subcommand. Built by
+/// `cmd::requests::run` from D-Bus, procfs, and userspace sources.
+#[derive(Debug, Default)]
+pub struct RequestsReport {
+    /// All inhibitors returned by logind, unfiltered. The display
+    /// loop in `format::text::print_requests` filters to only
+    /// sleep/idle entries when rendering, but counts the full list
+    /// in the summary footer (matches Python).
+    pub inhibitors: Vec<Inhibitor>,
+    pub wake_locks: Vec<String>,
+    pub audio_streams: Vec<AudioStream>,
+    pub vms: Vec<ProcessInfo>,
+    /// Only populated when verbose=true; rendered as the "[USB
+    /// WAKEUP DEVICES]" section. The summary footer does NOT count
+    /// these (matches Python).
+    pub usb_wakeup: Vec<UsbWakeDevice>,
 }
 
 #[cfg(test)]
@@ -104,10 +121,11 @@ mod tests {
     #[test]
     fn from_dbus_tuple_resolves_comm_from_proc_for_self_pid() {
         let pid = std::process::id();
+        // Wire tuple order is (what, who, why, mode, uid, pid).
         let tuple = (
+            "sleep:idle".to_owned(),
             "GNOME Settings Daemon".to_owned(),
             "Playing audio".to_owned(),
-            "sleep:idle".to_owned(),
             "block".to_owned(),
             1000_u32,
             pid,
@@ -133,10 +151,11 @@ mod tests {
     /// Empty `why` field — preserved verbatim, no special handling.
     #[test]
     fn from_dbus_tuple_preserves_empty_why() {
+        // Wire tuple order is (what, who, why, mode, uid, pid).
         let tuple = (
+            "sleep".to_owned(),
             "some.service".to_owned(),
             String::new(),
-            "sleep".to_owned(),
             "block".to_owned(),
             0_u32,
             std::process::id(),
@@ -148,10 +167,11 @@ mod tests {
     /// Pid that definitely doesn't exist — `comm` falls back to `who`.
     #[test]
     fn from_dbus_tuple_falls_back_to_who_for_missing_pid() {
+        // Wire tuple order is (what, who, why, mode, uid, pid).
         let tuple = (
+            "idle".to_owned(),
             "stale.service".to_owned(),
             "Stale inhibitor".to_owned(),
-            "idle".to_owned(),
             "delay".to_owned(),
             1000_u32,
             u32::MAX,

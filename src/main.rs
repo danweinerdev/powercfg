@@ -24,7 +24,10 @@ fn main() -> std::process::ExitCode {
     // Future args (Format, SysRoot, etc.) extend the Args struct rather than
     // threading new positional params through six dispatch arms.
     let result = match cli.command {
-        cli::Command::Requests { verbose } => cmd::requests::run(cmd::requests::Args { verbose }),
+        cli::Command::Requests { verbose } => cmd::requests::run(cmd::requests::Args {
+            verbose,
+            root: SysRoot::from_env(),
+        }),
         cli::Command::Lastwake { verbose, history } => {
             cmd::lastwake::run(cmd::lastwake::Args { verbose, history })
         }

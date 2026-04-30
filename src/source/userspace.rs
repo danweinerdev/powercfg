@@ -23,9 +23,6 @@ use crate::source::exec::run_with_timeout;
 /// The output of `pactl list sink-inputs short` is tab-separated rows
 /// of `<id>\t<sink>\t<client>\t<sample-spec>\t<volume>\t<mute>`. Only
 /// `id` and `client` survive into the model.
-// TODO(phase-3.4): first production caller is `cmd::requests`; drop
-// the allow once wired up.
-#[allow(dead_code)]
 pub fn list_audio_streams() -> Result<Vec<AudioStream>, SourceError> {
     let mut cmd = Command::new("pactl");
     cmd.args(["list", "sink-inputs", "short"]);

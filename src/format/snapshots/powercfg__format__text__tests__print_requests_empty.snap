@@ -1,0 +1,26 @@
+---
+source: src/format/text.rs
+assertion_line: 648
+expression: s
+---
+POWER REQUEST STATUS
+==================================================
+
+[SYSTEM INHIBITORS]
+------------------------------
+  None.
+
+[KERNEL WAKE LOCKS]
+------------------------------
+  None.
+
+[AUDIO STREAMS]
+------------------------------
+  None.
+
+[VIRTUAL MACHINES]
+------------------------------
+  None.
+
+==================================================
+No active sleep blockers detected.

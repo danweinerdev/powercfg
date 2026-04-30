@@ -21,8 +21,6 @@ use crate::source::SourceError;
 ///
 /// Construct once per command invocation and pass `&Connection` to the
 /// per-call helpers below.
-// TODO(phase-3.4/3.5): consumed by `cmd::requests` and `cmd::waketimers`.
-#[allow(dead_code)]
 pub fn system_bus() -> Result<Connection, SourceError> {
     Ok(Connection::system()?)
 }
@@ -38,8 +36,10 @@ pub fn system_bus() -> Result<Connection, SourceError> {
     default_path = "/org/freedesktop/login1"
 )]
 trait LogindManager {
-    /// Returns `(who, why, what, mode, uid, pid)` per inhibitor.
-    /// The 6-tuple shape is dictated by the D-Bus signature `a(ssssuu)`.
+    /// Returns `(what, who, why, mode, uid, pid)` per inhibitor.
+    /// The 6-tuple shape is dictated by the D-Bus signature `a(ssssuu)`
+    /// and the field order matches `Inhibit()` plus the trailing
+    /// `uid, pid` pair (see <https://systemd.io/INHIBITOR_LOCKS>).
     #[allow(clippy::type_complexity)]
     fn list_inhibitors(&self) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>>;
 }
@@ -95,12 +95,10 @@ trait SystemdTimer {
 }
 
 /// Call `org.freedesktop.login1.Manager.ListInhibitors` and convert each
-/// `(who, why, what, mode, uid, pid)` tuple to a typed [`Inhibitor`]
+/// `(what, who, why, mode, uid, pid)` tuple to a typed [`Inhibitor`]
 /// (with `comm` resolved from `/proc/<pid>/comm`).
 ///
 /// An empty inhibitor list is `Ok(vec![])`, not an error.
-// TODO(phase-3.4): consumed by `cmd::requests`.
-#[allow(dead_code)]
 pub fn list_inhibitors(conn: &Connection) -> Result<Vec<Inhibitor>, SourceError> {
     let proxy = LogindManagerProxyBlocking::new(conn)?;
     let raw = proxy.list_inhibitors()?;

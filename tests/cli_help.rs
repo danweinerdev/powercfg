@@ -103,11 +103,23 @@ fn sleepstates_runs_cleanly() {
 }
 
 #[test]
-fn requests_stub_exits_nonzero() {
-    // Panicking stubs surface as non-zero exit. We don't snapshot the
-    // panic message because Rust's panic format is not stable across
-    // compiler versions. The contract being asserted is the observable
-    // exit code, not the implementation mechanism — when the real handler
-    // lands in phase 3, this test naturally inverts via the per-task work.
-    powercfg().arg("requests").assert().failure();
+fn requests_exits_zero_with_empty_sysroot() {
+    // Real handler landed in 3.4. With an empty sysroot the procfs/sysfs
+    // sources return empty/Io errors that get swallowed, the live D-Bus
+    // and pactl calls may produce real data on the dev machine, but the
+    // command always exits 0. The header is unconditional — assert it
+    // and call the test done. A fixture-based snapshot would need a
+    // mocked D-Bus and pactl, which `tests/cli_help.rs` is not the
+    // place for; the writer-based unit tests in `format::text` cover
+    // the byte-for-byte output instead.
+    let assertion = powercfg()
+        .env("POWERCFG_SYSROOT", "/nonexistent-sysroot-for-test")
+        .arg("requests")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("POWER REQUEST STATUS"),
+        "requests should always print the section header: {stdout}",
+    );
 }
