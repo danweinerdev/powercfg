@@ -132,4 +132,31 @@ mod tests {
         assert_eq!(streams[0].id, "123");
         assert_eq!(streams[0].client, "Firefox");
     }
+
+    #[test]
+    fn parse_pactl_short_space_separated_row_is_silently_skipped() {
+        // PipeWire's pactl-compat layer has historically emitted
+        // space-separated columns on some distro/version combinations.
+        // The parser is strictly tab-separated, so a space-only row
+        // produces a single "column" and is silently dropped — pin
+        // that degradation behavior so a future "fix" doesn't end up
+        // partially parsing the wrong column.
+        let stdout = "123 sink Firefox rest\n";
+        assert!(parse_pactl_short(stdout).is_empty());
+    }
+
+    /// Live integration test: hits the actual pactl binary.
+    /// `#[ignore]` because CI containers may not have PulseAudio /
+    /// PipeWire available; run with `cargo test -- --ignored` on the
+    /// dev machine.
+    #[test]
+    #[ignore = "requires pactl and a running PulseAudio/PipeWire daemon; run with --ignored"]
+    fn list_audio_streams_against_live_daemon() {
+        let result = list_audio_streams();
+        assert!(
+            result.is_ok(),
+            "list_audio_streams should succeed against live daemon: {:?}",
+            result.err(),
+        );
+    }
 }

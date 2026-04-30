@@ -78,13 +78,15 @@ pub fn read_image_size_bytes(root: &SysRoot) -> Result<u64, SourceError> {
 // the allow once wired up.
 #[allow(dead_code)]
 pub fn read_kernel_wake_locks(root: &SysRoot) -> Result<Vec<String>, SourceError> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
     let path = root.join("sys/power/wake_lock");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
+    // Single read, no exists() pre-check: NotFound and PermissionDenied
+    // both fold to Ok(vec![]). Avoids the TOCTOU race where the file
+    // disappears between the check and the read, and matches the
+    // direct-read pattern used by read_sleep_states / read_disk_modes.
     match fs::read_to_string(&path) {
         Ok(content) => Ok(content.split_whitespace().map(|s| s.to_owned()).collect()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(Vec::new()),
+        Err(e) if matches!(e.kind(), NotFound | PermissionDenied) => Ok(Vec::new()),
         Err(e) => Err(SourceError::Io(e)),
     }
 }

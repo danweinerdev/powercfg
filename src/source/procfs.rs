@@ -174,6 +174,18 @@ pub fn find_processes_by_comm(
         return Ok(Vec::new());
     }
 
+    // The kernel's task_struct::comm field is TASK_COMM_LEN = 16 bytes
+    // (NUL-terminated → 15 visible chars). Names longer than that can
+    // never match anything because the kernel will have truncated the
+    // comm value before we read it. Catch the misconfiguration loudly
+    // in debug builds so wiring sites in cmd::* discover it during
+    // tests, not in production silence.
+    debug_assert!(
+        names.iter().all(|n| n.len() <= 15),
+        "comm name longer than kernel's 15-char limit: {:?}",
+        names.iter().find(|n| n.len() > 15),
+    );
+
     let proc_dir = root.join("proc");
     let entries = fs::read_dir(&proc_dir)?;
 
