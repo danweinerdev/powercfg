@@ -8,12 +8,15 @@
 
 use thiserror::Error;
 
+use crate::source::exec::ExecError;
+
 /// Failure modes for source-layer functions.
 ///
-/// `Dbus`, `Subprocess`, and `Timeout` carry placeholder `String` payloads
-/// during Phase 1; Phase 3 swaps them for richer typed payloads
-/// (`zbus::Error` arrives in 3.2 and the in-tree `ExecError` in 3.1)
-/// without requiring callers to change shape.
+/// `Subprocess` wraps the typed `ExecError` from `source::exec`, so a
+/// caller that uses `run_with_timeout(...)?` automatically bubbles
+/// `NotFound`, `Timeout`, and generic `Io` failures up as
+/// `SourceError::Subprocess(_)`. `Dbus` still carries a placeholder
+/// `String` until Phase 3.2 swaps it for `zbus::Error`.
 #[derive(Debug, Error)]
 pub enum SourceError {
     /// Filesystem I/O error (sysfs/procfs read).
@@ -44,22 +47,14 @@ pub enum SourceError {
     #[error("dbus: {0}")]
     Dbus(String),
 
-    /// Subprocess invocation failed (spawn, non-zero exit, decode).
+    /// Subprocess invocation failed.
     ///
-    /// Phase 3.1 changes the payload to the in-tree `ExecError`; declared
-    /// now for the same reason as `Dbus`.
-    // TODO(phase-3.1): constructed by source::exec.
-    #[allow(dead_code)]
+    /// Wraps the typed `ExecError` from `source::exec`. The `#[from]`
+    /// impl enables `?`-propagation from `run_with_timeout`. `Timeout`
+    /// is reachable through this variant — there is no separate
+    /// `SourceError::Timeout`.
     #[error("subprocess: {0}")]
-    Subprocess(String),
-
-    /// Subprocess exceeded its bounded timeout.
-    ///
-    /// Filled in when Phase 3.1 lands `source::exec::run_with_timeout`.
-    // TODO(phase-3.1): constructed by source::exec::run_with_timeout.
-    #[allow(dead_code)]
-    #[error("timeout: {0}")]
-    Timeout(String),
+    Subprocess(#[from] ExecError),
 }
 
 #[cfg(test)]
@@ -93,14 +88,19 @@ mod tests {
 
     #[test]
     fn subprocess_variant_displays_with_subprocess_prefix() {
-        let err = SourceError::Subprocess("journalctl exited 1".into());
-        assert_eq!(err.to_string(), "subprocess: journalctl exited 1");
+        let err = SourceError::Subprocess(ExecError::NotFound("journalctl".into()));
+        assert_eq!(err.to_string(), "subprocess: binary not found: journalctl");
     }
 
     #[test]
-    fn timeout_variant_displays_with_timeout_prefix() {
-        let err = SourceError::Timeout("dmesg timed out after 5s".into());
-        assert_eq!(err.to_string(), "timeout: dmesg timed out after 5s");
+    fn subprocess_variant_wraps_timeout() {
+        let err = SourceError::Subprocess(ExecError::Timeout {
+            timeout: std::time::Duration::from_secs(5),
+        });
+        assert!(
+            err.to_string().contains("timeout"),
+            "expected timeout message, got {err}",
+        );
     }
 
     #[test]
@@ -116,5 +116,19 @@ mod tests {
             "expected SourceError::Io, got {err:?}",
         );
         assert!(err.to_string().starts_with("io: "));
+    }
+
+    #[test]
+    fn from_exec_error_via_question_mark() {
+        fn run() -> Result<(), SourceError> {
+            // ? should convert ExecError → SourceError::Subprocess via #[from].
+            Err(ExecError::NotFound("pactl".into()))?;
+            Ok(())
+        }
+        let err = run().expect_err("should fail");
+        assert!(
+            matches!(err, SourceError::Subprocess(ExecError::NotFound(_))),
+            "expected SourceError::Subprocess(NotFound), got {err:?}",
+        );
     }
 }

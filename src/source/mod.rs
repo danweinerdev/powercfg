@@ -7,6 +7,7 @@
 //! behavior. See `Designs/RustRewrite/README.md` Decision 7.
 
 pub mod error;
+pub mod exec;
 pub mod procfs;
 pub mod sysfs;
 
