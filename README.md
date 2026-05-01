@@ -4,17 +4,30 @@ A Linux equivalent of Windows' `powercfg` command. Query power management status
 
 ## Requirements
 
-- Python 3.6+
+- Rust 1.85+ (stable; needed for the 2024 edition)
 - Linux with systemd
-- No external dependencies (uses only standard library)
 
 ## Installation
 
+Build and install from source:
+
 ```bash
-chmod +x powercfg.py
-# Optionally symlink to PATH
-ln -s $(pwd)/powercfg.py ~/.local/bin/powercfg
+cargo install --path .
 ```
+
+This puts the `powercfg` binary in `~/.cargo/bin/`. Make sure that directory is on your `PATH`.
+
+Once published to crates.io, you will also be able to run:
+
+```bash
+cargo install powercfg
+```
+
+Prebuilt binaries for common Linux targets will be attached to GitHub releases (available after the release workflow lands).
+
+### Upgrading from the Python version
+
+If you previously symlinked `~/.local/bin/powercfg -> powercfg.py`, remove that symlink (`rm ~/.local/bin/powercfg`) so the new binary in `~/.cargo/bin/powercfg` is picked up instead.
 
 ## Commands
 

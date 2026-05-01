@@ -1,68 +1,28 @@
-VENV := .venv
-PYTHON := $(VENV)/bin/python
-PIP := $(VENV)/bin/pip
-
-.PHONY: venv build install install-dev clean dist upload upload-test lint test help
+.PHONY: help build install install-dev test lint clean
 
 help:
 	@echo "Available targets:"
-	@echo "  venv         Create virtual environment"
-	@echo "  install      Install package into venv"
-	@echo "  install-dev  Install in editable mode for development"
-	@echo "  build        Build distribution packages"
-	@echo "  dist         Alias for build"
-	@echo "  clean        Remove build artifacts and venv"
-	@echo "  clean-build  Remove only build artifacts"
-	@echo "  upload       Upload to PyPI (requires twine)"
-	@echo "  upload-test  Upload to TestPyPI"
-	@echo "  lint         Run linters"
-	@echo "  test         Run all commands to verify they work"
+	@echo "  build        Build release binary (cargo build --release)"
+	@echo "  install      Install powercfg into ~/.cargo/bin"
+	@echo "  install-dev  Install debug build into ~/.cargo/bin"
+	@echo "  test         Run cargo test"
+	@echo "  lint         Run clippy (-D warnings) and cargo fmt --check"
+	@echo "  clean        Run cargo clean"
 
-venv:
-	@test -d $(VENV) || python3 -m venv $(VENV)
-	@$(PIP) install --quiet --upgrade pip
+build:
+	cargo build --release
 
-install: venv
-	$(PIP) install .
+install:
+	cargo install --path .
 
-install-dev: venv
-	$(PIP) install -e .
+install-dev:
+	cargo install --path . --debug
 
-build: venv
-	$(PIP) install --quiet build
-	$(PYTHON) -m build
+test:
+	cargo test
 
-dist: build
+lint:
+	cargo clippy --all-targets -- -D warnings && cargo fmt --check
 
-clean-build:
-	rm -rf build/
-	rm -rf dist/
-	rm -rf *.egg-info/
-	rm -rf __pycache__/
-	rm -rf .pytest_cache/
-	find . -name "*.pyc" -delete
-	find . -name "*.pyo" -delete
-
-clean: clean-build
-	rm -rf $(VENV)
-
-upload: build
-	$(PIP) install --quiet twine
-	$(VENV)/bin/twine upload dist/*
-
-upload-test: build
-	$(PIP) install --quiet twine
-	$(VENV)/bin/twine upload --repository testpypi dist/*
-
-lint: venv
-	$(PIP) install --quiet ruff
-	$(VENV)/bin/ruff check powercfg.py
-
-test: venv
-	$(PYTHON) powercfg.py --help
-	$(PYTHON) powercfg.py requests
-	$(PYTHON) powercfg.py lastwake
-	$(PYTHON) powercfg.py devicequery
-	$(PYTHON) powercfg.py sleepstates
-	$(PYTHON) powercfg.py waketimers
-	$(PYTHON) powercfg.py energy
+clean:
+	cargo clean
