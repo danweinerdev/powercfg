@@ -6,6 +6,7 @@
 
 pub mod devicequery;
 pub mod energy;
+pub mod lastwake;
 pub mod requests;
 pub mod sleepstates;
 pub mod waketimers;

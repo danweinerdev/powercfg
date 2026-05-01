@@ -9,6 +9,7 @@
 pub mod dbus;
 pub mod error;
 pub mod exec;
+pub mod journal;
 pub mod procfs;
 pub mod sysfs;
 pub mod userspace;

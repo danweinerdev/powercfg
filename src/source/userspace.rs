@@ -1,8 +1,11 @@
 //! Userspace tool integration via the `source::exec` helper.
 //!
 //! Hosts shellouts to tools that don't have a stable D-Bus API or
-//! library equivalent for our purposes — currently `pactl` for audio
-//! stream queries. Phase 4 adds `dmesg` and `journalctl`.
+//! library equivalent for our purposes — `pactl` for audio stream
+//! queries (3.3) and `dmesg` for kernel-ring-buffer wake diagnostics
+//! (4.1, consumed by `cmd::lastwake -v` in 4.2). `journalctl` lives
+//! in its own `source::journal` module because the kernel-journal
+//! parser is non-trivial.
 
 use std::process::Command;
 use std::time::Duration;
@@ -192,6 +195,51 @@ fn parse_property_line(line: &str) -> Option<(&str, &str)> {
     let (key, after) = line.split_once(" = \"")?;
     let value = after.strip_suffix('"')?;
     Some((key.trim(), value))
+}
+
+/// Capture recent `dmesg` lines that mention waking — the Python tool
+/// uses these in verbose `lastwake -v` output to surface the kernel's
+/// own wake-source diagnostics. Returns up to 5 most recent matching
+/// lines (case-insensitive on `wakeup`, `wake up`, `resume`),
+/// preserving their original chronological order.
+///
+/// Runs `dmesg --time-format=iso` with a 5-second timeout. On systems
+/// where dmesg is restricted (`kernel.dmesg_restrict=1` and non-root),
+/// the call returns `Err(SourceError::Subprocess(_))` — the caller in
+/// `cmd::lastwake` swallows this so the verbose section is just absent
+/// rather than failing the whole report.
+// TODO(phase-4.2): consumed by cmd::lastwake::run (verbose mode);
+// drop allow then.
+#[allow(dead_code)]
+pub fn dmesg_wake_lines() -> Result<Vec<String>, SourceError> {
+    let mut cmd = Command::new("dmesg");
+    cmd.args(["--time-format=iso"]);
+    let output = run_with_timeout(cmd, Duration::from_secs(5))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_dmesg_wake_lines(&stdout))
+}
+
+/// Filter dmesg output for wake-related lines and cap the result at 5
+/// most-recent entries (chronological order preserved).
+///
+/// Kept separate from `dmesg_wake_lines` so the parser can be exercised
+/// against fixture strings without spawning a real `dmesg` — same
+/// pattern as `parse_pactl_verbose`.
+fn parse_dmesg_wake_lines(stdout: &str) -> Vec<String> {
+    let mut matches: Vec<String> = stdout
+        .lines()
+        .filter(|line| {
+            let l = line.to_ascii_lowercase();
+            l.contains("wakeup") || l.contains("wake up") || l.contains("resume")
+        })
+        .map(|s| s.to_owned())
+        .collect();
+    // Take the last 5 entries (most recent under dmesg's
+    // chronological order) while preserving that order — matches the
+    // Python tool's `for line in reversed(lines): ... ; reversed(...)`
+    // dance in `get_wake_source_from_dmesg`.
+    let take_from = matches.len().saturating_sub(5);
+    matches.split_off(take_from)
 }
 
 #[cfg(test)]
@@ -406,5 +454,72 @@ Sink Input #5
             "list_audio_streams should succeed against live daemon: {:?}",
             result.err(),
         );
+    }
+
+    // ---- parse_dmesg_wake_lines tests ----
+
+    #[test]
+    fn parse_dmesg_wake_lines_filters_mixed_input() {
+        let stdout = "\
+2025-04-29T08:22:42-0700 ACPI: EC: interrupt blocked.
+2025-04-29T08:22:43-0700 PM: suspend exit
+2025-04-29T08:22:44-0700 ACPI: Wakeup Device [LID0]
+2025-04-29T08:22:45-0700 not relevant line
+2025-04-29T08:22:46-0700 system resume from S3
+";
+        let lines = parse_dmesg_wake_lines(stdout);
+        // 'Wakeup' (case-insensitive) and 'resume' match; the others don't.
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Wakeup Device"));
+        assert!(lines[1].contains("resume from S3"));
+    }
+
+    #[test]
+    fn parse_dmesg_wake_lines_is_case_insensitive() {
+        let stdout = "\
+2025-04-29T08:22:44-0700 KERNEL: WAKEUP source GPP0
+2025-04-29T08:22:45-0700 user pressed Wake Up button
+2025-04-29T08:22:46-0700 RESUME successfully
+";
+        let lines = parse_dmesg_wake_lines(stdout);
+        // All three variants should match regardless of case. Note
+        // 'Wake Up' contains 'wake up' once lowercased.
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn parse_dmesg_wake_lines_caps_at_five_most_recent() {
+        // Seven matching lines feed in; only the last five should
+        // come out, in their original chronological order.
+        let stdout = "\
+T01 wakeup A
+T02 wakeup B
+T03 wakeup C
+T04 wakeup D
+T05 wakeup E
+T06 wakeup F
+T07 wakeup G
+";
+        let lines = parse_dmesg_wake_lines(stdout);
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].contains("wakeup C"));
+        assert!(lines[1].contains("wakeup D"));
+        assert!(lines[2].contains("wakeup E"));
+        assert!(lines[3].contains("wakeup F"));
+        assert!(lines[4].contains("wakeup G"));
+    }
+
+    #[test]
+    fn parse_dmesg_wake_lines_no_matches_yields_empty() {
+        let stdout = "\
+2025-04-29T08:22:42-0700 unrelated kernel chatter
+2025-04-29T08:22:43-0700 nothing to see here
+";
+        assert!(parse_dmesg_wake_lines(stdout).is_empty());
+    }
+
+    #[test]
+    fn parse_dmesg_wake_lines_empty_input() {
+        assert!(parse_dmesg_wake_lines("").is_empty());
     }
 }
