@@ -8,6 +8,8 @@
 
 use std::fs;
 
+use serde::Serialize;
+
 use crate::model::devicequery::AcpiWakeDevice;
 use crate::model::requests::ProcessInfo;
 use crate::paths::SysRoot;
@@ -18,10 +20,13 @@ use crate::source::SourceError;
 /// `kind` is the literal value of the `Type` column (`"partition"`,
 /// `"file"`, etc.) — left as a free-form string because zram, btrfs swap
 /// files, and dm-crypt-on-LVM all show up here and the kernel's exact
-/// vocabulary isn't worth pinning to an enum at this layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// vocabulary isn't worth pinning to an enum at this layer. JSON output
+/// renames it to `"type"` to match the design schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct SwapDevice {
     pub device: String,
+    #[serde(rename = "type")]
     pub kind: String,
     pub size_kb: u64,
 }

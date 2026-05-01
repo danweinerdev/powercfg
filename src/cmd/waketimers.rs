@@ -31,11 +31,16 @@ pub fn run(args: Args) -> Result<()> {
 
     // Timers via systemd-manager + per-unit Timer interface. One
     // connection for the whole walk; `list_systemd_timers` borrows it.
+    // `all_timers` is only retained in verbose mode so that JSON
+    // consumers (Phase 5.2) can distinguish "didn't list" (key
+    // omitted) from "listed and found none" (`[]`).
     match dbus::system_bus() {
         Ok(conn) => match dbus::list_systemd_timers(&conn) {
             Ok(timers) => {
                 report.wake_timers = wake_capable(&timers);
-                report.all_timers = timers;
+                if args.verbose {
+                    report.all_timers = Some(timers);
+                }
             }
             Err(e) => tracing::debug!("list_systemd_timers: {e}"),
         },

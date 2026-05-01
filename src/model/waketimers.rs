@@ -3,6 +3,8 @@
 //! `WakeTimersReport` is the top-level handler-built bundle; `TimerEntry`
 //! is the per-unit leaf produced by `source::dbus::list_systemd_timers`.
 
+use serde::Serialize;
+
 /// One systemd timer unit, queried via
 /// `org.freedesktop.systemd1.Manager.ListUnits` plus per-unit `Timer`
 /// interface property reads.
@@ -12,7 +14,16 @@
 /// disabled or hasn't computed yet); `u64::MAX` is the systemd "no next"
 /// sentinel for some monotonic timers leaking through. The
 /// [`TimerEntry::next_elapse_display`] helper renders both as `"n/a"`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// JSON contract: the design schema names the wake-flag field `"wakes"`
+/// for `all_timers` rows, but here we expose `wake_system` (matching
+/// the systemd property name) on every row. The `next` field in the
+/// schema sketch is an already-rendered display string; this struct
+/// instead exposes `next_elapse_realtime_us` (raw µs since epoch) plus
+/// a separate display helper. Documented as deviation in
+/// `docs/json-schema.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct TimerEntry {
     /// Unit name, always ends in `.timer`.
     pub unit: String,
@@ -63,11 +74,25 @@ impl TimerEntry {
 /// `wake_timers` are the subset of `all_timers` where `wake_system` is
 /// true. They're stored separately because the printer treats them
 /// differently (always shown, with a "no wake timers active" fallback);
-/// `all_timers` is only rendered in verbose mode and capped at 15 rows.
-#[derive(Debug, Default)]
+/// `all_timers` is only populated in verbose mode and capped at 15
+/// rows when rendered.
+///
+/// JSON contract:
+/// - `wake_timers` is always an array (never omitted).
+/// - `all_timers` is `None` when `--verbose` was not set and is
+///   omitted from JSON; with `--verbose` it serializes as an array
+///   (possibly empty).
+/// - `rtc_wakealarm` serializes as `null` when absent — preserves
+///   "no alarm scheduled / source unavailable".
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct WakeTimersReport {
     pub wake_timers: Vec<TimerEntry>,
-    pub all_timers: Vec<TimerEntry>,
+    /// `None` when `--verbose` was not set; the JSON key is omitted
+    /// in that case so consumers can distinguish "didn't list all
+    /// timers" from "listed and found none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_timers: Option<Vec<TimerEntry>>,
     /// Formatted local-time string from `/sys/class/rtc/rtc0/wakealarm`.
     /// `None` means no alarm scheduled (or the file is unreadable —
     /// the caller swallows the error).
@@ -126,5 +151,63 @@ mod tests {
             s.len() > 20,
             "expected timezone suffix after timestamp: {s:?}",
         );
+    }
+
+    /// Default report (no verbose, no RTC alarm): `wake_timers` is an
+    /// empty array, `all_timers` is omitted, `rtc_wakealarm` is null.
+    #[test]
+    fn waketimers_report_default_renders_expected_shape() {
+        let report = WakeTimersReport::default();
+        let json = serde_json::to_string(&report).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(v["wake_timers"].is_array());
+        assert_eq!(v["wake_timers"].as_array().unwrap().len(), 0);
+        // `all_timers: None` → key omitted (verbose-gated).
+        assert!(!v.as_object().unwrap().contains_key("all_timers"));
+        // `rtc_wakealarm: None` → null.
+        assert!(v["rtc_wakealarm"].is_null());
+    }
+
+    /// Verbose report with empty `all_timers` Vec: key present as `[]`.
+    /// This locks the `null` (omitted) vs `[]` (present-and-empty)
+    /// distinction.
+    #[test]
+    fn waketimers_report_verbose_empty_renders_array_not_omitted() {
+        let report = WakeTimersReport {
+            wake_timers: vec![],
+            all_timers: Some(vec![]),
+            rtc_wakealarm: None,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["all_timers"].is_array());
+        assert_eq!(v["all_timers"].as_array().unwrap().len(), 0);
+    }
+
+    /// Populated report: TimerEntry rows render with snake_case keys
+    /// (`unit`, `wake_system`, `next_elapse_realtime_us`).
+    #[test]
+    fn waketimers_report_populated_renders_timer_keys() {
+        let timer = TimerEntry {
+            unit: "snapshot.timer".into(),
+            wake_system: true,
+            next_elapse_realtime_us: 1_745_939_400_000_000,
+        };
+        let report = WakeTimersReport {
+            wake_timers: vec![timer.clone()],
+            all_timers: Some(vec![timer]),
+            rtc_wakealarm: Some("2026-04-29 06:00:00".into()),
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(v["wake_timers"][0]["unit"], "snapshot.timer");
+        assert_eq!(v["wake_timers"][0]["wake_system"], true);
+        assert_eq!(
+            v["wake_timers"][0]["next_elapse_realtime_us"],
+            1_745_939_400_000_000_u64,
+        );
+        assert_eq!(v["rtc_wakealarm"], "2026-04-29 06:00:00");
     }
 }

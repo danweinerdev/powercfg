@@ -612,8 +612,12 @@ pub fn print_waketimers(
     // [ALL SCHEDULED TIMERS] — verbose only, only if non-empty.
     // Matches Python's `if args.verbose and all_timers:` guard
     // (powercfg.py line 740): an empty list under verbose still
-    // skips the section.
-    if verbose && !report.all_timers.is_empty() {
+    // skips the section. `all_timers` is `Some` only when verbose
+    // mode populated it (gated in `cmd::waketimers::run`).
+    if let Some(all_timers) = report.all_timers.as_deref()
+        && verbose
+        && !all_timers.is_empty()
+    {
         writeln!(out)?;
         writeln!(out, "[ALL SCHEDULED TIMERS]")?;
         writeln!(out, "{}", "-".repeat(30))?;
@@ -628,7 +632,7 @@ pub fn print_waketimers(
             "-".repeat(4),
             "-".repeat(20),
         )?;
-        for timer in report.all_timers.iter().take(ALL_TIMERS_DISPLAY_CAP) {
+        for timer in all_timers.iter().take(ALL_TIMERS_DISPLAY_CAP) {
             // Truncate names > 33 chars (Python: `timer["unit"][:33]`).
             // chars().take preserves UTF-8 boundaries, but `.timer`
             // unit names are ASCII so byte-slicing would also work.
@@ -640,8 +644,8 @@ pub fn print_waketimers(
             let next: String = next_full.chars().take(25).collect();
             writeln!(out, "  {unit:<35} {wakes:<6} {next}")?;
         }
-        if report.all_timers.len() > ALL_TIMERS_DISPLAY_CAP {
-            let extra = report.all_timers.len() - ALL_TIMERS_DISPLAY_CAP;
+        if all_timers.len() > ALL_TIMERS_DISPLAY_CAP {
+            let extra = all_timers.len() - ALL_TIMERS_DISPLAY_CAP;
             writeln!(out, "  ... and {extra} more timers")?;
         }
     }
@@ -1147,7 +1151,7 @@ mod tests {
 
         WakeTimersReport {
             wake_timers,
-            all_timers,
+            all_timers: Some(all_timers),
             rtc_wakealarm: Some("2026-04-29 06:00:00".to_string()),
         }
     }
@@ -1295,7 +1299,7 @@ mod tests {
             .collect();
         let report = WakeTimersReport {
             wake_timers: vec![],
-            all_timers,
+            all_timers: Some(all_timers),
             rtc_wakealarm: None,
         };
 

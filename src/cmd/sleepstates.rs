@@ -53,9 +53,15 @@ pub fn run(args: Args) -> Result<()> {
         Err(e) => tracing::debug!("read_swaps: {e}"),
     }
 
-    match sysfs::read_image_size_bytes(&args.root) {
-        Ok(bytes) => report.image_size_bytes = Some(bytes),
-        Err(e) => tracing::debug!("read_image_size_bytes: {e}"),
+    // `image_size_bytes` is gated on `--verbose` because the JSON
+    // contract requires the key only appear with `-v`. The text
+    // printer also already wraps its render in `if verbose`, so
+    // this gating doesn't change text output.
+    if args.verbose {
+        match sysfs::read_image_size_bytes(&args.root) {
+            Ok(bytes) => report.image_size_bytes = Some(bytes),
+            Err(e) => tracing::debug!("read_image_size_bytes: {e}"),
+        }
     }
 
     text::print_sleepstates(&report, args.verbose);

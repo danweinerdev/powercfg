@@ -6,6 +6,8 @@
 //! and `source::userspace::list_audio_streams` (3.3), and
 //! `source::sysfs::read_kernel_wake_locks` / `read_usb_wakeup_devices` (2.2).
 
+use serde::Serialize;
+
 use crate::model::devicequery::UsbWakeDevice;
 
 /// One sleep/idle inhibitor as returned by logind's `ListInhibitors`.
@@ -15,7 +17,8 @@ use crate::model::devicequery::UsbWakeDevice;
 /// column-compatible with the Python tool's `Process: <comm> (PID: <pid>)`
 /// line. If the proc lookup fails (process gone, permission denied), `comm`
 /// falls back to the `who` field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Inhibitor {
     /// Service name from logind, e.g. "GNOME Settings Daemon".
     pub who: String,
@@ -79,7 +82,8 @@ fn resolve_comm(pid: u32) -> Option<String> {
 /// the VM-detection path in `cmd::requests` (3.4). The `comm` field is
 /// the kernel's truncated 15-character process name (the value in
 /// `/proc/<pid>/comm`), not a full executable path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ProcessInfo {
     pub pid: u32,
     pub comm: String,
@@ -90,7 +94,11 @@ pub struct ProcessInfo {
 /// are `Option` because some streams (system mixer, screen recording,
 /// PipeWire stream from a non-Linux client) don't carry process
 /// metadata. The printer degrades gracefully across the four cases.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// JSON contract: absent application fields serialize as `null`
+/// (preserve the per-field unavailability signal) rather than omit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct AudioStream {
     /// Sink-input ID — the number after `Sink Input #` in the verbose
     /// output. Numeric in practice, kept as `String` to preserve the
@@ -107,7 +115,13 @@ pub struct AudioStream {
 
 /// Top-level data for the `requests` subcommand. Built by
 /// `cmd::requests::run` from D-Bus, procfs, and userspace sources.
-#[derive(Debug, Default)]
+///
+/// JSON contract: every collection serializes as `[]` when empty
+/// (queryable but empty) and as a populated array otherwise. None of
+/// the top-level fields are omitted from the JSON object — the schema
+/// is stable across CLI flag combinations.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct RequestsReport {
     /// All inhibitors returned by logind, unfiltered. The display
     /// loop in `format::text::print_requests` filters to only
@@ -192,5 +206,86 @@ mod tests {
             inh.comm, "stale.service",
             "expected fallback to `who` when /proc/<pid>/comm is unreadable",
         );
+    }
+
+    /// Round-trip JSON: every top-level collection serializes as `[]`
+    /// when empty, never omitted. This is the locked contract for the
+    /// `requests` subcommand.
+    #[test]
+    fn requests_report_empty_serializes_all_arrays() {
+        let report = RequestsReport::default();
+        let json = serde_json::to_string(&report).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        for key in [
+            "inhibitors",
+            "wake_locks",
+            "audio_streams",
+            "vms",
+            "usb_wakeup",
+        ] {
+            assert!(
+                v[key].is_array(),
+                "key {key:?} should serialize as [] (got {:?})",
+                v[key],
+            );
+            assert_eq!(v[key].as_array().unwrap().len(), 0);
+        }
+    }
+
+    /// Round-trip JSON: populated fields render as objects with the
+    /// design-doc keys. Inhibitor → snake_case; AudioStream Optional
+    /// fields render as `null` when None.
+    #[test]
+    fn requests_report_populated_serializes_expected_shape() {
+        let inhibitor = Inhibitor {
+            who: "test.service".into(),
+            why: "Playing audio".into(),
+            what: "sleep:idle".into(),
+            mode: "block".into(),
+            uid: 1000,
+            pid: 42,
+            comm: "test".into(),
+        };
+        let stream_no_app = AudioStream {
+            id: "5".into(),
+            application_name: None,
+            pid: None,
+            binary: None,
+        };
+        let stream_with_app = AudioStream {
+            id: "6".into(),
+            application_name: Some("Firefox".into()),
+            pid: Some(1234),
+            binary: Some("firefox".into()),
+        };
+        let report = RequestsReport {
+            inhibitors: vec![inhibitor],
+            wake_locks: vec!["audio".into()],
+            audio_streams: vec![stream_no_app, stream_with_app],
+            vms: vec![ProcessInfo {
+                pid: 9999,
+                comm: "qemu-system-x86".into(),
+            }],
+            usb_wakeup: vec![],
+        };
+        let json = serde_json::to_string(&report).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        assert_eq!(v["inhibitors"][0]["who"], "test.service");
+        assert_eq!(v["inhibitors"][0]["what"], "sleep:idle");
+        assert_eq!(v["inhibitors"][0]["pid"], 42);
+        assert_eq!(v["wake_locks"][0], "audio");
+        // Stream without application metadata: nulls (preserve unavailability).
+        assert!(v["audio_streams"][0]["application_name"].is_null());
+        assert!(v["audio_streams"][0]["pid"].is_null());
+        assert!(v["audio_streams"][0]["binary"].is_null());
+        // Stream with metadata: populated.
+        assert_eq!(v["audio_streams"][1]["application_name"], "Firefox");
+        assert_eq!(v["audio_streams"][1]["pid"], 1234);
+        assert_eq!(v["vms"][0]["comm"], "qemu-system-x86");
+        // usb_wakeup is empty Vec — array, not null.
+        assert!(v["usb_wakeup"].is_array());
+        assert_eq!(v["usb_wakeup"].as_array().unwrap().len(), 0);
     }
 }
