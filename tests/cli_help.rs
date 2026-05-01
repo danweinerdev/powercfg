@@ -123,3 +123,22 @@ fn requests_exits_zero_with_empty_sysroot() {
         "requests should always print the section header: {stdout}",
     );
 }
+
+#[test]
+fn waketimers_exits_zero_with_empty_sysroot() {
+    // Real handler landed in 3.5. With an empty sysroot the RTC alarm
+    // read fails (Io error swallowed); the live D-Bus call may produce
+    // real timer data on the dev machine. The command always exits 0
+    // and the header is unconditional. Byte-for-byte output coverage
+    // lives in the writer-based unit tests in `format::text`.
+    let assertion = powercfg()
+        .env("POWERCFG_SYSROOT", "/nonexistent-sysroot-for-test")
+        .arg("waketimers")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("WAKE TIMERS"),
+        "waketimers should always print the section header: {stdout}",
+    );
+}

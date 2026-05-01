@@ -11,6 +11,7 @@ use crate::model::devicequery::DeviceQueryReport;
 use crate::model::energy::EnergyReport;
 use crate::model::requests::RequestsReport;
 use crate::model::sleepstates::SleepStatesReport;
+use crate::model::waketimers::WakeTimersReport;
 use crate::paths::SysRoot;
 use crate::source::sysfs;
 
@@ -529,11 +530,117 @@ pub fn print_requests(
     Ok(())
 }
 
+/// Maximum rows in the verbose `[ALL SCHEDULED TIMERS]` table before
+/// the `... and N more timers` truncation suffix kicks in. Matches the
+/// Python tool's `all_timers[:15]` slice (powercfg.py line 745).
+const ALL_TIMERS_DISPLAY_CAP: usize = 15;
+
+/// Print a [`WakeTimersReport`] in the Python tool's text format
+/// (`cmd_waketimers`, powercfg.py 710-767).
+///
+/// Takes a `&mut dyn Write` so unit tests can capture the output and
+/// snapshot it without going through `assert_cmd`. The printer is
+/// total — empty sections still render their headers + a fallback
+/// line, matching Python.
+///
+/// Section ordering and behavior:
+/// - Header: `WAKE TIMERS` + `=` × 50.
+/// - `[TIMERS WITH WAKESYSTEM=YES]` (always): one entry per
+///   `wake_timers`, formatted as `  <unit>` then
+///   `    Next: <next_elapse_display>`. Empty list →
+///   `  None - no timers will wake the system from sleep`.
+/// - `[ALL SCHEDULED TIMERS]` (verbose only, only if `all_timers`
+///   non-empty): table with `Timer` (≤33 chars), `Wakes` (Yes/No),
+///   `Next` (≤25 chars) columns. Capped at 15 rows; overflow renders
+///   `  ... and N more timers`.
+/// - `[RTC WAKE ALARM]` (always): `  Scheduled wake: <s>` when set,
+///   `  No RTC wake alarm set` otherwise.
+/// - Trailing summary: `Wake timers active: N` when non-empty,
+///   `No active wake timers` when zero.
+pub fn print_waketimers(
+    report: &WakeTimersReport,
+    verbose: bool,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(out, "WAKE TIMERS")?;
+    writeln!(out, "{}", "=".repeat(50))?;
+
+    // [TIMERS WITH WAKESYSTEM=YES]
+    writeln!(out)?;
+    writeln!(out, "[TIMERS WITH WAKESYSTEM=YES]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    if report.wake_timers.is_empty() {
+        writeln!(out, "  None - no timers will wake the system from sleep")?;
+    } else {
+        for timer in &report.wake_timers {
+            writeln!(out, "  {}", timer.unit)?;
+            writeln!(out, "    Next: {}", timer.next_elapse_display())?;
+        }
+    }
+
+    // [ALL SCHEDULED TIMERS] — verbose only, only if non-empty.
+    // Matches Python's `if args.verbose and all_timers:` guard
+    // (powercfg.py line 740): an empty list under verbose still
+    // skips the section.
+    if verbose && !report.all_timers.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "[ALL SCHEDULED TIMERS]")?;
+        writeln!(out, "{}", "-".repeat(30))?;
+        // Header + underline. Widths match Python lines 743-744:
+        // Timer column padded to 35 (max name 33 + 2 spaces),
+        // Wakes column padded to 6, Next column unpadded.
+        writeln!(out, "  {:<35} {:<6} Next", "Timer", "Wakes")?;
+        writeln!(
+            out,
+            "  {:<35} {:<6} {}",
+            "-".repeat(33),
+            "-".repeat(4),
+            "-".repeat(20),
+        )?;
+        for timer in report.all_timers.iter().take(ALL_TIMERS_DISPLAY_CAP) {
+            // Truncate names > 33 chars (Python: `timer["unit"][:33]`).
+            // chars().take preserves UTF-8 boundaries, but `.timer`
+            // unit names are ASCII so byte-slicing would also work.
+            let unit: String = timer.unit.chars().take(33).collect();
+            let wakes = if timer.wake_system { "Yes" } else { "No" };
+            let next_full = timer.next_elapse_display();
+            // Python: `next[:25] if len(next) > 25 else next` — chars
+            // again to avoid splitting a UTF-8 codepoint.
+            let next: String = next_full.chars().take(25).collect();
+            writeln!(out, "  {unit:<35} {wakes:<6} {next}")?;
+        }
+        if report.all_timers.len() > ALL_TIMERS_DISPLAY_CAP {
+            let extra = report.all_timers.len() - ALL_TIMERS_DISPLAY_CAP;
+            writeln!(out, "  ... and {extra} more timers")?;
+        }
+    }
+
+    // [RTC WAKE ALARM]
+    writeln!(out)?;
+    writeln!(out, "[RTC WAKE ALARM]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    match &report.rtc_wakealarm {
+        Some(s) => writeln!(out, "  Scheduled wake: {s}")?,
+        None => writeln!(out, "  No RTC wake alarm set")?,
+    }
+
+    // Trailing summary.
+    writeln!(out)?;
+    writeln!(out, "{}", "=".repeat(50))?;
+    if report.wake_timers.is_empty() {
+        writeln!(out, "No active wake timers")?;
+    } else {
+        writeln!(out, "Wake timers active: {}", report.wake_timers.len())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::devicequery::UsbWakeDevice;
     use crate::model::requests::{AudioStream, Inhibitor, ProcessInfo, RequestsReport};
+    use crate::model::waketimers::{TimerEntry, WakeTimersReport};
 
     /// Helper: build a typical report with one sleep/idle inhibitor
     /// (renders) and one shutdown inhibitor (hidden but counted).
@@ -699,5 +806,253 @@ mod tests {
             "summary must count all inhibitors regardless of display filter: {s}",
         );
         insta::assert_snapshot!("print_requests_only_non_sleep", s);
+    }
+
+    // ---- print_waketimers tests ----------------------------------------
+
+    /// Tests that mutate `TZ` must serialize — the env is process-global
+    /// and `cargo test` runs threads in parallel by default. Mirrors
+    /// the same pattern used in `source::sysfs` tests.
+    static TZ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that restores `TZ` on drop. chrono::Local's
+    /// `next_elapse_display` formatting is TZ-dependent; tests force
+    /// `TZ=UTC` so snapshots stay stable across machines.
+    struct TzGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl TzGuard {
+        fn capture() -> Self {
+            Self {
+                prev: std::env::var_os("TZ"),
+            }
+        }
+    }
+
+    impl Drop for TzGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests holding a TzGuard also hold TZ_LOCK.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var("TZ", v),
+                    None => std::env::remove_var("TZ"),
+                }
+            }
+        }
+    }
+
+    /// SAFETY: caller holds `TZ_LOCK`.
+    unsafe fn force_utc() {
+        unsafe { std::env::set_var("TZ", "UTC") };
+    }
+
+    fn timer(unit: &str, wakes: bool, us: u64) -> TimerEntry {
+        TimerEntry {
+            unit: unit.to_string(),
+            wake_system: wakes,
+            next_elapse_realtime_us: us,
+        }
+    }
+
+    /// Build a report with two wake-capable + three non-wake timers and
+    /// an RTC alarm string. µs values chosen for chronological order
+    /// in any TZ; tests pin `TZ=UTC` for snapshot stability.
+    fn typical_waketimers_report() -> WakeTimersReport {
+        // 1745939400 µs-base = 2025-04-29 14:30:00 UTC.
+        let snapshot_us = 1_745_939_400_000_000;
+        let fwupd_us = 1_746_025_800_000_000;
+        let apt_us = 1_745_958_194_000_000;
+        let logrotate_us = 1_745_976_000_000_000;
+        let man_db_us = 1_746_011_400_000_000;
+
+        let wake_timers = vec![
+            timer("snapshot.timer", true, snapshot_us),
+            timer("fwupd-refresh.timer", true, fwupd_us),
+        ];
+        let mut all_timers = wake_timers.clone();
+        all_timers.push(timer("apt-daily.timer", false, apt_us));
+        all_timers.push(timer("logrotate.timer", false, logrotate_us));
+        all_timers.push(timer("man-db.timer", false, man_db_us));
+
+        WakeTimersReport {
+            wake_timers,
+            all_timers,
+            rtc_wakealarm: Some("2026-04-29 06:00:00".to_string()),
+        }
+    }
+
+    #[test]
+    fn print_waketimers_typical() {
+        // chrono::Local on Linux uses iana-time-zone (reads
+        // /etc/localtime, not $TZ), so the rendered next-elapse strings
+        // depend on the test machine's system TZ. We hold TZ_LOCK +
+        // TzGuard for symmetry with other env-touching tests, but the
+        // assertions are substring-only — they pin the structure (which
+        // sections appear, what counts render) without committing to a
+        // specific TZ-formatted timestamp.
+        let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tz = TzGuard::capture();
+        // SAFETY: TZ_LOCK held.
+        unsafe { force_utc() };
+
+        let report = typical_waketimers_report();
+        let mut out = Vec::new();
+        print_waketimers(&report, false, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+
+        assert!(s.starts_with("WAKE TIMERS\n"), "header missing: {s}");
+        assert!(
+            s.contains("[TIMERS WITH WAKESYSTEM=YES]"),
+            "wake section missing: {s}",
+        );
+        assert!(
+            s.contains("  snapshot.timer\n    Next:"),
+            "wake-timer entry must use 2-line block format: {s}",
+        );
+        assert!(
+            s.contains("  fwupd-refresh.timer\n    Next:"),
+            "second wake-timer entry must follow same format: {s}",
+        );
+        assert!(
+            !s.contains("[ALL SCHEDULED TIMERS]"),
+            "non-verbose run should omit all-timers table: {s}",
+        );
+        assert!(
+            !s.contains("apt-daily.timer"),
+            "non-verbose run should hide non-wake timers: {s}",
+        );
+        assert!(
+            s.contains("[RTC WAKE ALARM]") && s.contains("Scheduled wake: 2026-04-29 06:00:00"),
+            "RTC alarm section missing: {s}",
+        );
+        assert!(
+            s.trim_end().ends_with("Wake timers active: 2"),
+            "summary line wrong: {s}",
+        );
+    }
+
+    #[test]
+    fn print_waketimers_typical_verbose() {
+        let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tz = TzGuard::capture();
+        // SAFETY: TZ_LOCK held.
+        unsafe { force_utc() };
+
+        let report = typical_waketimers_report();
+        let mut out = Vec::new();
+        print_waketimers(&report, true, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+
+        assert!(
+            s.contains("[ALL SCHEDULED TIMERS]"),
+            "verbose run should include all-timers table: {s}",
+        );
+        // Header row uses fixed widths: "Timer" (≤35) "Wakes" (≤6) "Next".
+        assert!(
+            s.contains("  Timer                               Wakes  Next"),
+            "table header row missing or width drifted: {s}",
+        );
+        assert!(
+            s.contains("apt-daily.timer"),
+            "non-wake entry should appear under verbose: {s}",
+        );
+        // Wake-system column renders as Yes / No literally.
+        assert!(
+            s.contains("snapshot.timer") && s.contains("Yes"),
+            "wake-system column should render Yes for wake timers: {s}",
+        );
+        assert!(
+            s.contains("apt-daily.timer") && s.contains("No"),
+            "wake-system column should render No for non-wake timers: {s}",
+        );
+        // 2 Yes (wake) + 3 No (non-wake) = 5 rows total. 5 < 15 so no truncation.
+        assert!(
+            !s.contains("more timers"),
+            "5-entry list should not trigger truncation: {s}",
+        );
+        assert!(
+            s.trim_end().ends_with("Wake timers active: 2"),
+            "summary line wrong: {s}",
+        );
+    }
+
+    #[test]
+    fn print_waketimers_empty() {
+        // No TZ lock needed — the empty-report path doesn't traverse
+        // any timer entries (and so doesn't call next_elapse_display),
+        // so the output is fully deterministic.
+        let report = WakeTimersReport::default();
+        let mut out = Vec::new();
+        print_waketimers(&report, false, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+
+        let expected = concat!(
+            "WAKE TIMERS\n",
+            "==================================================\n",
+            "\n",
+            "[TIMERS WITH WAKESYSTEM=YES]\n",
+            "------------------------------\n",
+            "  None - no timers will wake the system from sleep\n",
+            "\n",
+            "[RTC WAKE ALARM]\n",
+            "------------------------------\n",
+            "  No RTC wake alarm set\n",
+            "\n",
+            "==================================================\n",
+            "No active wake timers\n",
+        );
+        assert_eq!(s, expected, "empty-report output drifted");
+    }
+
+    #[test]
+    fn print_waketimers_truncates_at_15() {
+        let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tz = TzGuard::capture();
+        // SAFETY: TZ_LOCK held.
+        unsafe { force_utc() };
+
+        // 20 timers, none wake-capable, so the verbose all-timers table
+        // hits the 15-row cap.
+        let all_timers: Vec<TimerEntry> = (0..20)
+            .map(|i| {
+                timer(
+                    &format!("timer{i:02}.timer"),
+                    false,
+                    1_745_939_400_000_000 + (i as u64) * 60_000_000,
+                )
+            })
+            .collect();
+        let report = WakeTimersReport {
+            wake_timers: vec![],
+            all_timers,
+            rtc_wakealarm: None,
+        };
+
+        let mut out = Vec::new();
+        print_waketimers(&report, true, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+
+        // First 15 (00..14) appear; 15..19 are truncated.
+        assert!(s.contains("timer00.timer"), "first row missing: {s}");
+        assert!(s.contains("timer14.timer"), "15th row missing: {s}");
+        assert!(
+            !s.contains("timer15.timer"),
+            "16th row must be truncated: {s}",
+        );
+        assert!(
+            s.contains("... and 5 more timers"),
+            "truncation suffix missing: {s}",
+        );
+        // Empty wake_timers + non-empty all_timers: still get the
+        // "no wake timers" header line, but the all-timers table renders.
+        assert!(
+            s.contains("None - no timers will wake the system from sleep"),
+            "wake-timer fallback missing: {s}",
+        );
+        assert!(
+            s.trim_end().ends_with("No active wake timers"),
+            "summary should be no-active line when wake_timers empty: {s}",
+        );
     }
 }

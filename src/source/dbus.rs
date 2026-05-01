@@ -111,9 +111,7 @@ pub fn list_inhibitors(conn: &Connection) -> Result<Vec<Inhibitor>, SourceError>
 ///
 /// Per-unit property reads that fail (e.g. a unit without a real Timer
 /// interface) fall back to `(false, 0)` rather than failing the whole
-/// walk. The `0` sentinel is rendered as `n/a` by 3.5's formatter.
-// TODO(phase-3.5): consumed by `cmd::waketimers`.
-#[allow(dead_code)]
+/// walk. The `0` sentinel is rendered as `n/a` by `print_waketimers`.
 pub fn list_systemd_timers(conn: &Connection) -> Result<Vec<TimerEntry>, SourceError> {
     let manager = SystemdManagerProxyBlocking::new(conn)?;
     let units = manager.list_units()?;

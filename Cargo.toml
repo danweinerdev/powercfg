@@ -14,7 +14,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 wait-timeout = "0.2"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 

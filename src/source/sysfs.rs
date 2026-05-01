@@ -613,6 +613,41 @@ fn read_trimmed(dir: &std::path::Path, name: &str) -> Option<String> {
         .map(|s| s.trim().to_owned())
 }
 
+/// Read `/sys/class/rtc/rtc0/wakealarm` and format as a local-time
+/// `YYYY-MM-DD HH:MM:SS` string.
+///
+/// Returns:
+/// - `Ok(Some(formatted))` for non-zero, non-empty content (alarm scheduled).
+/// - `Ok(None)` for an empty file or content that's exactly `"0"` /
+///   `"0\n"` — both mean "no alarm set".
+/// - `Err(SourceError::Io)` for a missing file (machine without RTC alarm
+///   support — kernel without `CONFIG_RTC_INTF_SYSFS_ALARM`) or
+///   permission-denied. The caller in `cmd::waketimers` swallows the
+///   error to render "No RTC wake alarm set".
+/// - `Err(SourceError::Parse)` for a non-numeric value.
+///
+/// Uses **local time**, not UTC, to match Python's
+/// `datetime.fromtimestamp(int(content)).strftime("%Y-%m-%d %H:%M:%S")`
+/// (powercfg.py lines 700-704). Tests force `TZ=UTC` for snapshot
+/// stability.
+pub fn read_rtc_wakealarm(root: &SysRoot) -> Result<Option<String>, SourceError> {
+    let path = root.join("sys/class/rtc/rtc0/wakealarm");
+    let content = fs::read_to_string(&path)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+    }
+    let secs: i64 = trimmed
+        .parse()
+        .map_err(|e| SourceError::Parse(format!("rtc wakealarm: {e} (input: {trimmed:?})")))?;
+    use chrono::TimeZone;
+    let local = chrono::Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .ok_or_else(|| SourceError::Parse(format!("rtc wakealarm: invalid epoch {secs}")))?;
+    Ok(Some(local.format("%Y-%m-%d %H:%M:%S").to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1631,5 +1666,153 @@ mod tests {
     unsafe extern "C" {
         #[link_name = "geteuid"]
         fn libc_geteuid() -> u32;
+    }
+
+    // ---- read_rtc_wakealarm tests --------------------------------------
+
+    /// Tests that mutate `TZ` must serialize — the env is process-global
+    /// and `cargo test` runs threads in parallel by default.
+    static TZ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that restores `TZ` on drop, mirroring the EnvGuard
+    /// pattern in `paths.rs`. Holding the guard implies holding
+    /// `TZ_LOCK`, so other threads can't observe the env mid-test.
+    struct TzGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl TzGuard {
+        fn capture() -> Self {
+            Self {
+                prev: std::env::var_os("TZ"),
+            }
+        }
+    }
+
+    impl Drop for TzGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests holding a TzGuard also hold TZ_LOCK.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var("TZ", v),
+                    None => std::env::remove_var("TZ"),
+                }
+            }
+        }
+    }
+
+    /// Set TZ for the duration of the test. Caller must already hold
+    /// `TZ_LOCK`. chrono::Local re-reads `TZ` from the environment on
+    /// each `timestamp_opt` call, so this works without process restart.
+    ///
+    /// SAFETY: `TZ_LOCK` is held by the caller.
+    unsafe fn set_tz(tz: &str) {
+        unsafe { std::env::set_var("TZ", tz) };
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_typical_formats_local_time() {
+        let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tz = TzGuard::capture();
+        // SAFETY: TZ_LOCK is held.
+        unsafe { set_tz("UTC") };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // 1745939400 epoch -> 2025-04-29 14:30:00 UTC.
+        write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", "1745939400\n");
+
+        let s = read_rtc_wakealarm(&root)
+            .expect("read should succeed")
+            .expect("should yield Some for non-zero value");
+
+        // YYYY-MM-DD HH:MM:SS shape (no TZ suffix here, matching Python).
+        assert_eq!(s.len(), 19, "unexpected length: {s:?}");
+        let bytes = s.as_bytes();
+        for (i, b) in bytes.iter().enumerate() {
+            let ok = match i {
+                4 | 7 => *b == b'-',
+                10 => *b == b' ',
+                13 | 16 => *b == b':',
+                _ => b.is_ascii_digit(),
+            };
+            assert!(ok, "char {i} of {s:?} doesn't match format");
+        }
+        assert!(s.starts_with("2025-"), "TZ=UTC should yield 2025-: {s}");
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_zero_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", "0\n");
+        let result = read_rtc_wakealarm(&root).expect("0 is not an error");
+        assert!(result.is_none(), "0 should mean no alarm: {result:?}");
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_empty_file_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", "");
+        let result = read_rtc_wakealarm(&root).expect("empty is not an error");
+        assert!(result.is_none(), "empty should mean no alarm: {result:?}");
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_garbage_returns_parse_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", "not-a-number\n");
+        let err = read_rtc_wakealarm(&root).expect_err("non-numeric should fail to parse");
+        assert!(
+            matches!(err, SourceError::Parse(_)),
+            "expected Parse, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_missing_file_returns_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Don't create the file — kernel without CONFIG_RTC_INTF_SYSFS_ALARM.
+        let err = read_rtc_wakealarm(&root).expect_err("missing file should fail");
+        assert!(
+            matches!(err, SourceError::Io(_)),
+            "expected Io, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn read_rtc_wakealarm_format_matches_chrono_local() {
+        let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tz = TzGuard::capture();
+        // SAFETY: TZ_LOCK is held.
+        unsafe { set_tz("UTC") };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let epoch: i64 = 1_745_939_400;
+        write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", &format!("{epoch}\n"));
+
+        let s = read_rtc_wakealarm(&root)
+            .expect("read should succeed")
+            .expect("Some value");
+
+        // chrono::Local on Linux uses iana-time-zone, which reads
+        // /etc/localtime rather than the TZ env var, so we can't force
+        // the formatted output to UTC inside a unit test. Instead,
+        // compute what chrono::Local would produce for the same epoch
+        // and assert the function matches — pinning that the conversion
+        // path is `secs -> chrono::Local.timestamp_opt -> %Y-%m-%d %H:%M:%S`
+        // without committing to a specific machine TZ.
+        use chrono::TimeZone;
+        let expected = chrono::Local
+            .timestamp_opt(epoch, 0)
+            .single()
+            .expect("epoch resolves")
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        assert_eq!(s, expected, "format must match chrono::Local::strftime");
     }
 }
