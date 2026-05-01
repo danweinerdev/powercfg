@@ -11,3 +11,4 @@ Thumbs.db
 
 # Rust build output
 /target/
+/dist/

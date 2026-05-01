@@ -36,8 +36,8 @@ If you previously symlinked `~/.local/bin/powercfg -> powercfg.py`, remove that 
 Show what's preventing the system from sleeping.
 
 ```bash
-./powercfg.py requests
-./powercfg.py requests -v    # Include USB wakeup devices
+powercfg requests
+powercfg requests -v    # Include USB wakeup devices
 ```
 
 **Sources:** systemd-inhibit, /sys/power/wake_lock, PulseAudio/PipeWire, running VMs
@@ -47,9 +47,9 @@ Show what's preventing the system from sleeping.
 Show information about the last sleep/wake cycle.
 
 ```bash
-./powercfg.py lastwake
-./powercfg.py lastwake -v        # Include ACPI devices, kernel messages
-./powercfg.py lastwake -n 10     # Show last 10 sleep/wake events
+powercfg lastwake
+powercfg lastwake -v        # Include ACPI devices, kernel messages
+powercfg lastwake -n 10     # Show last 10 sleep/wake events
 ```
 
 **Sources:** journalctl, /sys/power/pm_wakeup_irq, /proc/acpi/wakeup
@@ -59,9 +59,9 @@ Show information about the last sleep/wake cycle.
 List devices capable of waking the system from sleep.
 
 ```bash
-./powercfg.py devicequery
-./powercfg.py devicequery -v             # Show wake statistics
-./powercfg.py devicequery --enabled-only # Only enabled devices
+powercfg devicequery
+powercfg devicequery -v             # Show wake statistics
+powercfg devicequery --enabled-only # Only enabled devices
 ```
 
 **Sources:** /proc/acpi/wakeup, /sys/bus/usb/devices, /sys/bus/pci/devices
@@ -71,8 +71,8 @@ List devices capable of waking the system from sleep.
 Show available sleep states and current configuration.
 
 ```bash
-./powercfg.py sleepstates
-./powercfg.py sleepstates -v    # Show hibernation modes, image size
+powercfg sleepstates
+powercfg sleepstates -v    # Show hibernation modes, image size
 ```
 
 **Sources:** /sys/power/state, /sys/power/mem_sleep, /sys/power/disk, /proc/swaps
@@ -82,8 +82,8 @@ Show available sleep states and current configuration.
 Show scheduled timers that can wake the system.
 
 ```bash
-./powercfg.py waketimers
-./powercfg.py waketimers -v    # Show all timers with wake status
+powercfg waketimers
+powercfg waketimers -v    # Show all timers with wake status
 ```
 
 **Sources:** systemctl list-timers, /sys/class/rtc/rtc0/wakealarm
@@ -93,8 +93,8 @@ Show scheduled timers that can wake the system.
 Show power consumption and thermal status.
 
 ```bash
-./powercfg.py energy
-./powercfg.py energy -v    # Show available EPP modes
+powercfg energy
+powercfg energy -v    # Show available EPP modes
 ```
 
 **Sources:** /sys/class/power_supply, /sys/devices/system/cpu/cpufreq, /sys/class/hwmon
@@ -102,7 +102,7 @@ Show power consumption and thermal status.
 ## Example Output
 
 ```
-$ ./powercfg.py requests
+$ powercfg requests
 POWER REQUEST STATUS
 ==================================================
 
@@ -126,12 +126,12 @@ Total sleep blockers found: 2
 
 | Windows | Linux (this tool) |
 |---------|-------------------|
-| `powercfg /requests` | `./powercfg.py requests` |
-| `powercfg /lastwake` | `./powercfg.py lastwake` |
-| `powercfg /devicequery wake_armed` | `./powercfg.py devicequery --enabled-only` |
-| `powercfg /availablesleepstates` | `./powercfg.py sleepstates` |
-| `powercfg /waketimers` | `./powercfg.py waketimers` |
-| `powercfg /energy` | `./powercfg.py energy` |
+| `powercfg /requests` | `powercfg requests` |
+| `powercfg /lastwake` | `powercfg lastwake` |
+| `powercfg /devicequery wake_armed` | `powercfg devicequery --enabled-only` |
+| `powercfg /availablesleepstates` | `powercfg sleepstates` |
+| `powercfg /waketimers` | `powercfg waketimers` |
+| `powercfg /energy` | `powercfg energy` |
 
 ## License
 
