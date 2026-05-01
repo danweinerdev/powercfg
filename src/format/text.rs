@@ -9,7 +9,7 @@ use std::io::Write;
 use crate::format::freq::format_freq;
 use crate::model::devicequery::DeviceQueryReport;
 use crate::model::energy::EnergyReport;
-use crate::model::requests::RequestsReport;
+use crate::model::requests::{AudioStream, RequestsReport};
 use crate::model::sleepstates::SleepStatesReport;
 use crate::model::waketimers::WakeTimersReport;
 use crate::paths::SysRoot;
@@ -379,6 +379,33 @@ pub fn print_energy(report: &EnergyReport, verbose: bool) {
     println!("{}", "=".repeat(50));
 }
 
+/// Render an `AudioStream` into the per-stream `Client:` line value.
+///
+/// Eight cases over (name, binary, pid). The most common live cases
+/// are "all three present" (browsers, music players) and "all three
+/// missing" (system streams that don't expose process metadata, e.g.
+/// the screen-recording mixer). The intermediate combinations are
+/// rarer but legitimate — `application.name` without
+/// `application.process.id` happens for sandboxed PipeWire streams,
+/// for instance — so the printer handles each one explicitly rather
+/// than collapsing to a fallback.
+fn format_audio_client(stream: &AudioStream) -> String {
+    match (
+        stream.application_name.as_deref(),
+        stream.binary.as_deref(),
+        stream.pid,
+    ) {
+        (Some(name), Some(binary), Some(pid)) => format!("{name} ({binary}, PID: {pid})"),
+        (Some(name), None, Some(pid)) => format!("{name} (PID: {pid})"),
+        (Some(name), Some(binary), None) => format!("{name} ({binary})"),
+        (Some(name), None, None) => name.to_string(),
+        (None, Some(binary), Some(pid)) => format!("{binary} (PID: {pid})"),
+        (None, Some(binary), None) => binary.to_string(),
+        (None, None, Some(pid)) => format!("PID {pid}"),
+        (None, None, None) => "<unknown>".to_string(),
+    }
+}
+
 /// Map an inhibitor's resolved `comm` string to the human-readable VM
 /// label the printer renders. `comm` values come from
 /// `source::procfs::find_processes_by_comm` so they're already trimmed
@@ -482,7 +509,8 @@ pub fn print_requests(
     } else {
         for stream in &report.audio_streams {
             writeln!(out, "  Stream ID: {}", stream.id)?;
-            writeln!(out, "    Client: {}", stream.client)?;
+            let client = format_audio_client(stream);
+            writeln!(out, "    Client: {client}")?;
         }
     }
 
@@ -668,13 +696,20 @@ mod tests {
             ],
             wake_locks: vec!["audio".into()],
             audio_streams: vec![
+                // Full-population: name + binary + pid all present.
                 AudioStream {
                     id: "123".into(),
-                    client: "Firefox".into(),
+                    application_name: Some("Firefox".into()),
+                    pid: Some(12345),
+                    binary: Some("firefox".into()),
                 },
+                // Partial: name + pid, no binary (the rare-but-legitimate
+                // sandboxed-stream case).
                 AudioStream {
                     id: "124".into(),
-                    client: "Spotify".into(),
+                    application_name: Some("Spotify".into()),
+                    pid: Some(7775),
+                    binary: None,
                 },
             ],
             vms: vec![ProcessInfo {
@@ -806,6 +841,71 @@ mod tests {
             "summary must count all inhibitors regardless of display filter: {s}",
         );
         insta::assert_snapshot!("print_requests_only_non_sleep", s);
+    }
+
+    // ---- format_audio_client arm coverage -------------------------------
+    //
+    // One test per arm of the 2x2x2 (name, binary, pid) match. The match
+    // arms are exhaustive in the implementation; pinning all 8 here keeps
+    // the per-arm format string from drifting accidentally.
+
+    fn stream_with(name: Option<&str>, binary: Option<&str>, pid: Option<u32>) -> AudioStream {
+        AudioStream {
+            id: "0".into(),
+            application_name: name.map(str::to_owned),
+            binary: binary.map(str::to_owned),
+            pid,
+        }
+    }
+
+    #[test]
+    fn format_audio_client_all_three_present() {
+        let s = stream_with(Some("Firefox"), Some("firefox"), Some(12345));
+        assert_eq!(format_audio_client(&s), "Firefox (firefox, PID: 12345)");
+    }
+
+    #[test]
+    fn format_audio_client_name_and_pid_no_binary() {
+        let s = stream_with(Some("Spotify"), None, Some(7775));
+        assert_eq!(format_audio_client(&s), "Spotify (PID: 7775)");
+    }
+
+    #[test]
+    fn format_audio_client_name_and_binary_no_pid() {
+        // Rare but legitimate: a system stream that exposes binary
+        // but no process.id.
+        let s = stream_with(Some("Mixer"), Some("pulsemixer"), None);
+        assert_eq!(format_audio_client(&s), "Mixer (pulsemixer)");
+    }
+
+    #[test]
+    fn format_audio_client_name_only() {
+        let s = stream_with(Some("Firefox"), None, None);
+        assert_eq!(format_audio_client(&s), "Firefox");
+    }
+
+    #[test]
+    fn format_audio_client_binary_and_pid_no_name() {
+        let s = stream_with(None, Some("firefox"), Some(12345));
+        assert_eq!(format_audio_client(&s), "firefox (PID: 12345)");
+    }
+
+    #[test]
+    fn format_audio_client_binary_only() {
+        let s = stream_with(None, Some("firefox"), None);
+        assert_eq!(format_audio_client(&s), "firefox");
+    }
+
+    #[test]
+    fn format_audio_client_pid_only() {
+        let s = stream_with(None, None, Some(12345));
+        assert_eq!(format_audio_client(&s), "PID 12345");
+    }
+
+    #[test]
+    fn format_audio_client_nothing_known() {
+        let s = stream_with(None, None, None);
+        assert_eq!(format_audio_client(&s), "<unknown>");
     }
 
     // ---- print_waketimers tests ----------------------------------------

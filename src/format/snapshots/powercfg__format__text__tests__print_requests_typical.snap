@@ -1,6 +1,5 @@
 ---
 source: src/format/text.rs
-assertion_line: 601
 expression: s
 ---
 POWER REQUEST STATUS
@@ -21,9 +20,9 @@ POWER REQUEST STATUS
 [AUDIO STREAMS]
 ------------------------------
   Stream ID: 123
-    Client: Firefox
+    Client: Firefox (firefox, PID: 12345)
   Stream ID: 124
-    Client: Spotify
+    Client: Spotify (PID: 7775)
 
 [VIRTUAL MACHINES]
 ------------------------------

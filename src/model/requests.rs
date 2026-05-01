@@ -85,18 +85,24 @@ pub struct ProcessInfo {
     pub comm: String,
 }
 
-/// One active PulseAudio/PipeWire sink-input.
-///
-/// Produced by `source::userspace::list_audio_streams` (which shells
-/// out to `pactl list sink-inputs short`) and consumed by
-/// `cmd::requests` (3.4). `id` is the sink-input ID (numeric in
-/// practice but typed as `String` to match the raw column from
-/// `pactl`'s output). `client` is the client name or `"Unknown"` if
-/// the column is missing.
+/// One active PulseAudio/PipeWire sink-input as queried via
+/// `pactl list sink-inputs` (verbose). All three application-* fields
+/// are `Option` because some streams (system mixer, screen recording,
+/// PipeWire stream from a non-Linux client) don't carry process
+/// metadata. The printer degrades gracefully across the four cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioStream {
+    /// Sink-input ID — the number after `Sink Input #` in the verbose
+    /// output. Numeric in practice, kept as `String` to preserve the
+    /// raw column without a parse step.
     pub id: String,
-    pub client: String,
+    /// `application.name` property (e.g., `"Firefox"`, `"spotify"`).
+    pub application_name: Option<String>,
+    /// `application.process.id` property, parsed as `u32`. `None` when
+    /// the property is absent or unparseable.
+    pub pid: Option<u32>,
+    /// `application.process.binary` property (e.g., `"firefox"`).
+    pub binary: Option<String>,
 }
 
 /// Top-level data for the `requests` subcommand. Built by
