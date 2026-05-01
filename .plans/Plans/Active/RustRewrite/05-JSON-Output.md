@@ -3,14 +3,19 @@ title: "JSON Output"
 type: phase
 plan: RustRewrite
 phase: 5
-status: planned
+status: in-progress
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-04-30
+debriefs:
+  - task: "5.1"
+    commit: "ae2ebce"
+    fix_up: "3277037"
+    notes: "Implementer landed Serialize derives across all six model files plus 17 round-trip tests and docs/json-schema.md (251 tests). Several schema deviations from the design-doc sketch were documented inline (printer-computed values like duration_seconds, raw kernel units like size_kb). Quality scan caught two minors: RequestsReport.usb_wakeup was Vec (always-[]) when it should have been Option<Vec> matching the verbose-gated pattern used elsewhere; and WakeIrq.device: null was undocumented and untested. Both fixed; 253 tests pass."
 deliverable: "`--json` global flag works for all six subcommands; JSON shape locked by snapshot tests."
 tasks:
   - id: "5.1"
     title: "Serialize derives and JSON schema documentation"
-    status: planned
+    status: complete
     verification: "Every public model struct (`RequestsReport`, `LastWakeReport`, `DeviceQueryReport`, `SleepStatesReport`, `WakeTimersReport`, `EnergyReport` and their nested types) carries `#[derive(Serialize)]` with `#[serde(rename_all = \"snake_case\")]` where field names need adjustment. Optional fields use `#[serde(skip_serializing_if = \"Option::is_none\")]` only where the schema says `null` for absent. `docs/json-schema.md` documents one representative JSON object per subcommand, matching the sketches in the design doc."
   - id: "5.2"
     title: "Wire --json global flag with snapshot tests for all six commands"
@@ -30,14 +35,14 @@ The phase is separated from the per-command phases so the text-mode snapshots st
 ## 5.1: Serialize derives and JSON schema documentation
 
 ### Subtasks
-- [ ] Add `serde = { version = "1", features = ["derive"] }` and `serde_json` to `Cargo.toml`.
-- [ ] Annotate every model struct with `#[derive(Serialize)]`. Apply `#[serde(rename_all = "snake_case")]` at the struct level so Rust's `cur_freq_khz` matches the schema's `cur_freq_khz` (already snake but consistency).
-- [ ] For each `Option<T>` field where the schema says the key may be omitted entirely, add `#[serde(skip_serializing_if = "Option::is_none")]`. For fields where the schema says `null`, leave the default behavior.
-- [ ] For `Vec` fields whose presence is conditional on a CLI flag (e.g., `kernel_messages` only with `-v`, `history` only with `-n`), use `Option<Vec<T>>` instead of plain `Vec<T>` so the key is omitted from JSON when the flag is unset. A plain empty `Vec` would serialize as `[]`, which would be ambiguous with "the flag was set but there were no events" — `null`/missing makes the distinction explicit.
-- [ ] Apply the same Option-shape pattern at section level: when a source returned `Err` (D-Bus down, sysfs unreadable, subprocess timeout), the corresponding report field is `None` and serializes as `null` in JSON. When the source returned `Ok(empty)`, the field serializes as `[]`. This makes "data unavailable" distinguishable from "data was queryable but empty" — verified by a unit test that constructs a report with one `None` field and one empty-`Vec` field, serializes, and asserts the JSON keys differ in shape.
-- [ ] Verify enum serialization: `SleepEventKind::Sleep` should serialize as `"sleep"`, `Wake` as `"wake"` — use `#[serde(rename_all = "lowercase")]` on the enum.
-- [ ] Write `docs/json-schema.md`: one representative JSON object per subcommand, copied from the design doc Decision 5 sketches. Add a one-line note: "Removing or renaming a field is a breaking change. Adding optional fields is non-breaking."
-- [ ] Round-trip unit test: construct a sample of every report struct with mixed populated/empty fields, serialize, parse back via `serde_json::Value`, assert the expected shape.
+- [x] Add `serde = { version = "1", features = ["derive"] }` and `serde_json` to `Cargo.toml`.
+- [x] Annotate every model struct with `#[derive(Serialize)]`. Apply `#[serde(rename_all = "snake_case")]` at the struct level so Rust's `cur_freq_khz` matches the schema's `cur_freq_khz` (already snake but consistency).
+- [x] For each `Option<T>` field where the schema says the key may be omitted entirely, add `#[serde(skip_serializing_if = "Option::is_none")]`. For fields where the schema says `null`, leave the default behavior.
+- [x] For `Vec` fields whose presence is conditional on a CLI flag (e.g., `kernel_messages` only with `-v`, `history` only with `-n`), use `Option<Vec<T>>` instead of plain `Vec<T>` so the key is omitted from JSON when the flag is unset. A plain empty `Vec` would serialize as `[]`, which would be ambiguous with "the flag was set but there were no events" — `null`/missing makes the distinction explicit. (Quality-scan fix-up extended this to `requests.usb_wakeup`, which had been left as `Vec<_>`.)
+- [x] Apply the same Option-shape pattern at section level: when a source returned `Err` (D-Bus down, sysfs unreadable, subprocess timeout), the corresponding report field is `None` and serializes as `null` in JSON. When the source returned `Ok(empty)`, the field serializes as `[]`. This makes "data unavailable" distinguishable from "data was queryable but empty" — verified by a unit test that constructs a report with one `None` field and one empty-`Vec` field, serializes, and asserts the JSON keys differ in shape.
+- [x] Verify enum serialization: `SleepEventKind::Sleep` should serialize as `"sleep"`, `Wake` as `"wake"` — use `#[serde(rename_all = "lowercase")]` on the enum.
+- [x] Write `docs/json-schema.md`: one representative JSON object per subcommand, copied from the design doc Decision 5 sketches. Add a one-line note: "Removing or renaming a field is a breaking change. Adding optional fields is non-breaking."
+- [x] Round-trip unit test: construct a sample of every report struct with mixed populated/empty fields, serialize, parse back via `serde_json::Value`, assert the expected shape.
 
 ### Notes
 Don't add `#[derive(Deserialize)]` — there is no consumer of these structs as input today. Adding it later is a non-breaking change.
