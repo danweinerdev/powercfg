@@ -28,7 +28,7 @@ phases:
     depends_on: [3]
   - id: 5
     title: "JSON Output"
-    status: planned
+    status: complete
     doc: "05-JSON-Output.md"
     depends_on: [1, 2, 3, 4]
   - id: 6

@@ -3,7 +3,7 @@ title: "JSON Output"
 type: phase
 plan: RustRewrite
 phase: 5
-status: in-progress
+status: complete
 created: 2026-04-28
 updated: 2026-04-30
 debriefs:
@@ -11,6 +11,10 @@ debriefs:
     commit: "ae2ebce"
     fix_up: "3277037"
     notes: "Implementer landed Serialize derives across all six model files plus 17 round-trip tests and docs/json-schema.md (251 tests). Several schema deviations from the design-doc sketch were documented inline (printer-computed values like duration_seconds, raw kernel units like size_kb). Quality scan caught two minors: RequestsReport.usb_wakeup was Vec (always-[]) when it should have been Option<Vec> matching the verbose-gated pattern used elsewhere; and WakeIrq.device: null was undocumented and untested. Both fixed; 253 tests pass."
+  - task: "5.2"
+    commit: "50aaeb7"
+    fix_up: "93438eb"
+    notes: "Implementer wired Format through every cmd::*::Args, branched dispatch on Format::Text vs Format::Json, added a format::json::write_report helper that holds a single stdout lock for both the serialize and the trailing-newline write, and added 15 integration tests in tests/json.rs (insta json+redactions features enabled). 7 cli_help snapshots regenerated for the cleaned-up --json doc text. 268 tests pass. Quality scan caught one minor: BrokenPipe was propagated as an anyhow error, so `--json | head` exited 1 with stderr noise — fixed by checking ErrorKind::BrokenPipe and exiting 0 silently in both write paths."
 deliverable: "`--json` global flag works for all six subcommands; JSON shape locked by snapshot tests."
 tasks:
   - id: "5.1"
@@ -19,7 +23,7 @@ tasks:
     verification: "Every public model struct (`RequestsReport`, `LastWakeReport`, `DeviceQueryReport`, `SleepStatesReport`, `WakeTimersReport`, `EnergyReport` and their nested types) carries `#[derive(Serialize)]` with `#[serde(rename_all = \"snake_case\")]` where field names need adjustment. Optional fields use `#[serde(skip_serializing_if = \"Option::is_none\")]` only where the schema says `null` for absent. `docs/json-schema.md` documents one representative JSON object per subcommand, matching the sketches in the design doc."
   - id: "5.2"
     title: "Wire --json global flag with snapshot tests for all six commands"
-    status: planned
+    status: complete
     depends_on: ["5.1"]
     verification: "Each of the six subcommands run with `--json` against the fixture sysroot produces snapshot-stable JSON. The JSON parses successfully via `serde_json::from_str::<serde_json::Value>` (round-trip). Field names, types, and nullability match the sketches in `Designs/RustRewrite/README.md` Decision 5. The text output mode is unchanged (existing snapshots still pass). Empty collections serialize as `[]`, absent optional fields serialize as `null` (or omit, per the per-command schema)."
 ---
@@ -50,10 +54,10 @@ Don't add `#[derive(Deserialize)]` — there is no consumer of these structs as 
 ## 5.2: Wire --json global flag with snapshot tests for all six commands
 
 ### Subtasks
-- [ ] In `cli.rs`, the existing `--json` global flag dispatches through to a `format` enum: `Format::Text` or `Format::Json`.
-- [ ] In each `cmd::*::run`, after building the report struct, branch on the format: `Format::Text => format::text::print_*(...)` or `Format::Json => serde_json::to_writer_pretty(io::stdout(), &report)?; println!()`.
-- [ ] `tests/json.rs` — for each of the six subcommands, run `powercfg <cmd> --json` against the fixture sysroot, snapshot the output via `insta::assert_json_snapshot!`. Also include verbose variants where flags differ (`devicequery -v --json`, `lastwake -v --json`, etc.).
-- [ ] CLI snapshot for `--help` updated to show `--json` flag (existing snapshot will need acceptance).
+- [x] In `cli.rs`, the existing `--json` global flag dispatches through to a `format` enum: `Format::Text` or `Format::Json`.
+- [x] In each `cmd::*::run`, after building the report struct, branch on the format: `Format::Text => format::text::print_*(...)` or `Format::Json => format::json::write_report(&report)?` (helper holds a single stdout lock across the serialize + trailing newline; also swallows BrokenPipe per the quality-scan fix-up).
+- [x] `tests/json.rs` — for each of the six subcommands, run `powercfg <cmd> --json` against the fixture sysroot, snapshot the output via `insta::assert_json_snapshot!`. Also include verbose variants where flags differ (`devicequery -v --json`, `lastwake -v --json`, etc.).
+- [x] CLI snapshot for `--help` updated to show `--json` flag (the existing 7 cli_help snapshots regenerated for the cleaned-up doc text).
 
 ### Notes
 Use `to_writer_pretty` for human-readability — the output is small (KB at most) and pretty-printing makes it usable directly in a shell. Tools that want compact output can pipe through `jq -c`.
