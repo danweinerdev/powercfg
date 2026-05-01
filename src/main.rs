@@ -28,9 +28,11 @@ fn main() -> std::process::ExitCode {
             verbose,
             root: SysRoot::from_env(),
         }),
-        cli::Command::Lastwake { verbose, history } => {
-            cmd::lastwake::run(cmd::lastwake::Args { verbose, history })
-        }
+        cli::Command::Lastwake { verbose, history } => cmd::lastwake::run(cmd::lastwake::Args {
+            verbose,
+            history,
+            root: SysRoot::from_env(),
+        }),
         cli::Command::Devicequery {
             verbose,
             enabled_only,

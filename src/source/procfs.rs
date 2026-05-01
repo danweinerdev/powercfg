@@ -51,6 +51,61 @@ pub fn read_acpi_wakeup(root: &SysRoot) -> Result<Vec<AcpiWakeDevice>, SourceErr
     parse_acpi_wakeup(&content)
 }
 
+/// Look up the device-name region of an IRQ row in `/proc/interrupts`.
+///
+/// `/proc/interrupts` rows look like:
+///
+/// ```text
+///   8:    0    0   IO-APIC   8-edge      rtc0
+///   9:  117  204   IO-APIC   9-fasteoi   acpi
+/// ```
+///
+/// We find the line whose first whitespace-trimmed token is `<irq>:`
+/// and return the last two tokens joined with a single space (the
+/// device-name region). Returns `Ok(None)` when no such line is found.
+/// Mirrors Python `get_irq_info` (powercfg.py 299-311); the Rust caller
+/// in `cmd::lastwake` swallows any `SourceError::Io` itself.
+pub fn read_irq_info(root: &SysRoot, irq: &str) -> Result<Option<String>, SourceError> {
+    let path = root.join("proc/interrupts");
+    let content = fs::read_to_string(&path)?;
+    Ok(find_irq_info(&content, irq))
+}
+
+/// Pure parser for [`read_irq_info`]. Walks lines, finds the row whose
+/// leading token (after trim) is `<irq>:`, and returns its last two
+/// whitespace-separated tokens joined with a space.
+fn find_irq_info(content: &str, irq: &str) -> Option<String> {
+    let prefix = format!("{irq}:");
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(&prefix) {
+            continue;
+        }
+        // Confirm the prefix is followed by whitespace (or end-of-line)
+        // so `1:` doesn't match `10:`.
+        let after = &trimmed[prefix.len()..];
+        if !after.is_empty() && !after.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 3 {
+            // Python: " ".join(parts[-2:]). The leading "<irq>:" is
+            // parts[0], so we always have at least three tokens before
+            // taking the last two.
+            return Some(parts[parts.len() - 2..].join(" "));
+        }
+        // 2-token row (e.g. an unfinished kernel emit) — Python guards
+        // with `if len(parts) >= 2: return " ".join(parts[-2:])`. The
+        // resulting "<irq>: <one-token>" join is not useful; mirror
+        // Python's literal behavior.
+        if parts.len() == 2 {
+            return Some(parts.join(" "));
+        }
+        return None;
+    }
+    None
+}
+
 /// Parse the textual `/proc/acpi/wakeup` format.
 ///
 /// The kernel emits a single header line followed by one whitespace-
@@ -537,6 +592,63 @@ GPP8 S4
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].pid, 1001);
         assert_eq!(found[1].pid, 1002);
+    }
+
+    // ---- find_irq_info / read_irq_info tests ---------------------------
+
+    const PROC_INTERRUPTS_TYPICAL: &str = "           CPU0       CPU1
+  0:        125          0   IO-APIC    2-edge      timer
+  8:          1          0   IO-APIC    8-edge      rtc0
+  9:        117        204   IO-APIC    9-fasteoi   acpi
+ 14:        500        300   IO-APIC   14-edge      ata_piix
+NMI:          0          0   Non-maskable interrupts
+";
+
+    #[test]
+    fn find_irq_info_returns_last_two_tokens_for_match() {
+        // IRQ 9: trailing tokens are "9-fasteoi" and "acpi".
+        let info = find_irq_info(PROC_INTERRUPTS_TYPICAL, "9").expect("match");
+        assert_eq!(info, "9-fasteoi acpi");
+    }
+
+    #[test]
+    fn find_irq_info_returns_none_for_missing_irq() {
+        assert!(find_irq_info(PROC_INTERRUPTS_TYPICAL, "999").is_none());
+    }
+
+    #[test]
+    fn find_irq_info_does_not_match_prefix() {
+        // IRQ "1" must NOT match the line beginning "14:".
+        assert!(find_irq_info(PROC_INTERRUPTS_TYPICAL, "1").is_none());
+    }
+
+    #[test]
+    fn find_irq_info_skips_non_numeric_irq_label_rows() {
+        // The "NMI:" row starts with a non-numeric prefix; an IRQ lookup
+        // for "NMI" would technically match (Python doesn't guard on
+        // numeric-only either). Pin the literal behavior so a refactor
+        // doesn't accidentally diverge.
+        let info = find_irq_info(PROC_INTERRUPTS_TYPICAL, "NMI").expect("match");
+        assert_eq!(info, "Non-maskable interrupts");
+    }
+
+    #[test]
+    fn read_irq_info_via_fixture_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let path = root.join("proc/interrupts");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&path, PROC_INTERRUPTS_TYPICAL).expect("write");
+        let info = read_irq_info(&root, "8").expect("read").expect("match");
+        assert_eq!(info, "8-edge rtc0");
+    }
+
+    #[test]
+    fn read_irq_info_missing_file_is_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let err = read_irq_info(&root, "9").expect_err("missing file should error");
+        assert!(matches!(err, SourceError::Io(_)));
     }
 
     #[test]

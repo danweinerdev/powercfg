@@ -66,8 +66,6 @@ fn run_journalctl(since: &str) -> Result<String, SourceError> {
 /// Default callers use `since = "7 days ago"` to match Python's
 /// behavior for `lastwake` (no `-n N`) — see `powercfg.py` lines 247
 /// and 269.
-// TODO(phase-4.2): consumed by cmd::lastwake::run; drop allow then.
-#[allow(dead_code)]
 pub fn last_kernel_event(
     matcher: &str,
     since: &str,
@@ -92,8 +90,6 @@ pub fn last_kernel_event(
 ///
 /// Callers in `-n N` mode use `since = "30 days ago"` to match
 /// Python's wider history window — see `powercfg.py` line 1045.
-// TODO(phase-4.2): consumed by cmd::lastwake::run; drop allow then.
-#[allow(dead_code)]
 pub fn list_kernel_events(since: &str) -> Result<Vec<SleepEvent>, SourceError> {
     let stdout = run_journalctl(since)?;
     let mut events = Vec::new();

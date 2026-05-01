@@ -1,0 +1,18 @@
+---
+source: tests/lastwake.rs
+assertion_line: 176
+expression: out
+---
+LAST WAKE INFORMATION
+==================================================
+
+[LAST SLEEP/WAKE CYCLE]
+------------------------------
+  Sleep time: Unknown
+  Wake time:  Unknown (system may not have slept this boot)
+
+[WAKE SOURCE]
+------------------------------
+  Wake IRQ: Not available
+
+==================================================

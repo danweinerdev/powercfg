@@ -88,6 +88,25 @@ pub fn read_kernel_wake_locks(root: &SysRoot) -> Result<Vec<String>, SourceError
     }
 }
 
+/// Read `/sys/power/pm_wakeup_irq` — the IRQ number that triggered the
+/// most recent wake from suspend.
+///
+/// Returns `Ok(None)` when the file is empty (kernel hasn't recorded a
+/// wake on this boot). Returns `Err(SourceError::Io)` only on a genuine
+/// read failure; missing or permission-denied are reported as `Io` so
+/// the caller can debug-log them. Mirrors Python `get_wake_irq`
+/// (powercfg.py 286-296), which silently returns `None` on any error;
+/// the Rust caller in `cmd::lastwake` swallows the error itself.
+pub fn read_wake_irq(root: &SysRoot) -> Result<Option<String>, SourceError> {
+    let path = root.join("sys/power/pm_wakeup_irq");
+    let content = fs::read_to_string(&path)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
 /// Parse the kernel's bracketed-current syntax into `(modes, current)`.
 ///
 /// Mirrors Python `get_mem_sleep_modes`/`get_disk_modes`: the bracketed
@@ -1666,6 +1685,44 @@ mod tests {
     unsafe extern "C" {
         #[link_name = "geteuid"]
         fn libc_geteuid() -> u32;
+    }
+
+    // ---- read_wake_irq tests -------------------------------------------
+
+    #[test]
+    fn read_wake_irq_typical_returns_trimmed_value() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/power/pm_wakeup_irq", "9\n");
+        let irq = read_wake_irq(&root).expect("read");
+        assert_eq!(irq.as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn read_wake_irq_empty_file_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        write_fixture(&root, "sys/power/pm_wakeup_irq", "");
+        let irq = read_wake_irq(&root).expect("read");
+        assert!(irq.is_none(), "empty file should yield None");
+    }
+
+    #[test]
+    fn read_wake_irq_whitespace_only_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        // Kernel sometimes emits a bare newline before any IRQ has fired.
+        write_fixture(&root, "sys/power/pm_wakeup_irq", "\n");
+        let irq = read_wake_irq(&root).expect("read");
+        assert!(irq.is_none(), "whitespace-only file should yield None");
+    }
+
+    #[test]
+    fn read_wake_irq_missing_file_is_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = SysRoot::new(tmp.path());
+        let err = read_wake_irq(&root).expect_err("missing file should error");
+        assert!(matches!(err, SourceError::Io(_)));
     }
 
     // ---- read_rtc_wakealarm tests --------------------------------------

@@ -1,0 +1,6 @@
+           CPU0       CPU1
+  0:        125          0   IO-APIC    2-edge      timer
+  8:          1          0   IO-APIC    8-edge      rtc0
+  9:        117        204   IO-APIC    9-fasteoi   acpi
+ 14:        500        300   IO-APIC   14-edge      ata_piix
+NMI:          0          0   Non-maskable interrupts

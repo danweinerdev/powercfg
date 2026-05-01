@@ -5,10 +5,13 @@
 //! printers land here per-subcommand as Phase 1+ implements each handler.
 
 use std::io::Write;
+use std::time::Duration;
 
+use crate::format::duration::format_duration;
 use crate::format::freq::format_freq;
 use crate::model::devicequery::DeviceQueryReport;
 use crate::model::energy::EnergyReport;
+use crate::model::lastwake::{LastWakeReport, SleepEventKind};
 use crate::model::requests::{AudioStream, RequestsReport};
 use crate::model::sleepstates::SleepStatesReport;
 use crate::model::waketimers::WakeTimersReport;
@@ -663,6 +666,172 @@ pub fn print_waketimers(
     Ok(())
 }
 
+/// Maximum width of a kernel-wake-message line in the verbose output
+/// before the truncation suffix kicks in. Matches Python's `if len(line)
+/// > 70: line = line[:67] + "..."` (powercfg.py 1118-1119).
+const KERNEL_WAKE_LINE_MAX: usize = 70;
+
+/// Render a `DateTime<FixedOffset>` in the same shape `journalctl -o
+/// short-iso` produced (e.g. `2025-04-29T08:22:44-0700`). Python keeps
+/// the raw matched string; the Rust caller has a parsed `DateTime` so
+/// we re-format with the equivalent specifier.
+fn format_journal_ts(ts: chrono::DateTime<chrono::FixedOffset>) -> String {
+    ts.format("%Y-%m-%dT%H:%M:%S%z").to_string()
+}
+
+/// Print a [`LastWakeReport`] in the Python tool's text format
+/// (`cmd_lastwake`, powercfg.py 1067-1146).
+///
+/// Section ordering and behavior:
+/// - Header: `LAST WAKE INFORMATION` + `=` × 50.
+/// - `[LAST SLEEP/WAKE CYCLE]`: prints `Sleep time:` and `Wake time:`
+///   lines, falling back to `Unknown` (sleep) or
+///   `Unknown (system may not have slept this boot)` (wake) when the
+///   journal source returned `None`. A `Duration:` line follows when
+///   both timestamps are present and `wake - sleep > 0`.
+/// - `[WAKE SOURCE]`: prints `Wake IRQ: <irq>` and (when non-`None`)
+///   `Device: <info>`. Falls back to `Wake IRQ: Not available` when no
+///   IRQ was recorded.
+/// - `[KERNEL WAKE MESSAGES]` (verbose only, only if the dmesg list is
+///   non-empty): prints up to 5 lines truncated to 70 chars (Python's
+///   `line[:67] + "..."` rule).
+/// - `[ENABLED ACPI WAKE DEVICES]` (verbose only): prints each enabled
+///   ACPI device as `<device>: <state> (<sysfs>)` (or without the
+///   parenthesized sysfs when absent). Empty list → `  None.`.
+/// - `[RECENT SLEEP/WAKE HISTORY]` (history mode only): prints up to
+///   `history_count` events as `  <ts> - <KIND>` (uppercase).
+/// - Trailing `=` × 50.
+pub fn print_lastwake(
+    report: &LastWakeReport,
+    verbose: bool,
+    history_count: Option<usize>,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    writeln!(out, "LAST WAKE INFORMATION")?;
+    writeln!(out, "{}", "=".repeat(50))?;
+
+    // [LAST SLEEP/WAKE CYCLE]
+    writeln!(out)?;
+    writeln!(out, "[LAST SLEEP/WAKE CYCLE]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    match report.last_sleep {
+        Some(t) => writeln!(out, "  Sleep time: {}", format_journal_ts(t))?,
+        None => writeln!(out, "  Sleep time: Unknown")?,
+    }
+    match report.last_wake {
+        Some(t) => writeln!(out, "  Wake time:  {}", format_journal_ts(t))?,
+        None => writeln!(
+            out,
+            "  Wake time:  Unknown (system may not have slept this boot)"
+        )?,
+    }
+    if let (Some(sleep), Some(wake)) = (report.last_sleep, report.last_wake) {
+        // Both present — render the duration when wake is strictly
+        // after sleep. A negative or zero delta means the journal had
+        // them out of order (rare; the matcher catches old wake-only
+        // boots) and Python silently skips the line.
+        let delta = wake.signed_duration_since(sleep);
+        if delta.num_seconds() > 0 {
+            // chrono::Duration may be negative; we already gated on >0.
+            // num_seconds() truncates toward zero — matching Python's
+            // `int(td.total_seconds())`.
+            let secs = delta.num_seconds() as u64;
+            let formatted = format_duration(Duration::from_secs(secs));
+            writeln!(out, "  Duration:   {formatted}")?;
+        }
+    }
+
+    // [WAKE SOURCE]
+    writeln!(out)?;
+    writeln!(out, "[WAKE SOURCE]")?;
+    writeln!(out, "{}", "-".repeat(30))?;
+    match &report.wake_irq {
+        Some(wi) => {
+            writeln!(out, "  Wake IRQ: {}", wi.irq)?;
+            if let Some(dev) = &wi.device {
+                writeln!(out, "  Device: {dev}")?;
+            }
+        }
+        None => writeln!(out, "  Wake IRQ: Not available")?,
+    }
+
+    // [KERNEL WAKE MESSAGES] — verbose only, only if non-empty.
+    // Matches Python `if dmesg_wake and args.verbose:` (line 1113):
+    // an empty dmesg result skips the section even under -v.
+    if verbose {
+        if let Some(lines) = &report.dmesg_wake {
+            if !lines.is_empty() {
+                writeln!(out)?;
+                writeln!(out, "[KERNEL WAKE MESSAGES]")?;
+                writeln!(out, "{}", "-".repeat(30))?;
+                for line in lines {
+                    let truncated = truncate_kernel_wake_line(line);
+                    writeln!(out, "  {truncated}")?;
+                }
+            }
+        }
+    }
+
+    // [ENABLED ACPI WAKE DEVICES] — verbose only, always renders the
+    // header (with `  None.` fallback when no devices are enabled).
+    if verbose {
+        writeln!(out)?;
+        writeln!(out, "[ENABLED ACPI WAKE DEVICES]")?;
+        writeln!(out, "{}", "-".repeat(30))?;
+        match &report.acpi_enabled {
+            Some(devs) if !devs.is_empty() => {
+                for dev in devs {
+                    let sysfs_suffix = match &dev.sysfs {
+                        Some(s) if !s.is_empty() => format!(" ({s})"),
+                        _ => String::new(),
+                    };
+                    writeln!(out, "  {}: {}{}", dev.device, dev.state, sysfs_suffix)?;
+                }
+            }
+            _ => writeln!(out, "  None.")?,
+        }
+    }
+
+    // [RECENT SLEEP/WAKE HISTORY] — history mode only.
+    if history_count.is_some() {
+        writeln!(out)?;
+        writeln!(out, "[RECENT SLEEP/WAKE HISTORY]")?;
+        writeln!(out, "{}", "-".repeat(30))?;
+        match &report.history {
+            Some(events) if !events.is_empty() => {
+                for event in events {
+                    let kind = match event.kind {
+                        SleepEventKind::Sleep => "SLEEP",
+                        SleepEventKind::Wake => "WAKE",
+                    };
+                    writeln!(out, "  {} - {kind}", format_journal_ts(event.time))?;
+                }
+            }
+            _ => writeln!(out, "  No sleep/wake events found.")?,
+        }
+    }
+
+    writeln!(out)?;
+    writeln!(out, "{}", "=".repeat(50))?;
+    Ok(())
+}
+
+/// Truncate a kernel-wake-message line to 70 chars, replacing the tail
+/// with `...` (so the result is still ≤70 chars). Mirrors the Python
+/// guard `if len(line) > 70: line = line[:67] + "..."`.
+///
+/// `chars().take()` ensures we don't split mid-codepoint when a wake
+/// message contains non-ASCII bytes (rare on real kernels, but the
+/// dmesg buffer can contain anything).
+fn truncate_kernel_wake_line(line: &str) -> String {
+    if line.chars().count() > KERNEL_WAKE_LINE_MAX {
+        let head: String = line.chars().take(KERNEL_WAKE_LINE_MAX - 3).collect();
+        format!("{head}...")
+    } else {
+        line.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,5 +1323,202 @@ mod tests {
             s.trim_end().ends_with("No active wake timers"),
             "summary should be no-active line when wake_timers empty: {s}",
         );
+    }
+
+    // ---- print_lastwake tests ------------------------------------------
+
+    use crate::model::lastwake::{LastWakeReport, SleepEvent, SleepEventKind, WakeIrq};
+    use chrono::{DateTime, FixedOffset};
+
+    fn ts(s: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%z").expect("valid ts")
+    }
+
+    #[test]
+    fn print_lastwake_default_with_full_data() {
+        // Both timestamps + IRQ + device. Duration = 7h 7m 26s.
+        let report = LastWakeReport {
+            last_sleep: Some(ts("2025-04-29T01:15:18-0700")),
+            last_wake: Some(ts("2025-04-29T08:22:44-0700")),
+            wake_irq: Some(WakeIrq {
+                irq: "9".into(),
+                device: Some("9-fasteoi acpi".into()),
+            }),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, false, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("Sleep time: 2025-04-29T01:15:18-0700"), "{s}");
+        assert!(s.contains("Wake time:  2025-04-29T08:22:44-0700"), "{s}");
+        assert!(s.contains("Duration:   7h 7m 26s"), "duration wrong: {s}");
+        assert!(s.contains("Wake IRQ: 9"), "{s}");
+        assert!(s.contains("Device: 9-fasteoi acpi"), "{s}");
+        assert!(
+            !s.contains("[KERNEL WAKE MESSAGES]"),
+            "non-verbose run should omit kernel wake section: {s}",
+        );
+        assert!(
+            !s.contains("[ENABLED ACPI WAKE DEVICES]"),
+            "non-verbose run should omit ACPI section: {s}",
+        );
+        assert!(
+            !s.contains("[RECENT SLEEP/WAKE HISTORY]"),
+            "no history flag should omit history section: {s}",
+        );
+    }
+
+    #[test]
+    fn print_lastwake_unknown_when_no_data() {
+        let report = LastWakeReport::default();
+        let mut out = Vec::new();
+        print_lastwake(&report, false, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("Sleep time: Unknown"), "{s}");
+        assert!(
+            s.contains("Wake time:  Unknown (system may not have slept this boot)"),
+            "{s}",
+        );
+        assert!(s.contains("Wake IRQ: Not available"), "{s}");
+        assert!(
+            !s.contains("Duration:"),
+            "no timestamps means no duration line: {s}",
+        );
+    }
+
+    #[test]
+    fn print_lastwake_skips_duration_when_wake_before_sleep() {
+        // Out-of-order pair (wake before sleep) — Python silently
+        // skips the duration line.
+        let report = LastWakeReport {
+            last_sleep: Some(ts("2025-04-29T08:22:44-0700")),
+            last_wake: Some(ts("2025-04-29T01:15:18-0700")),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, false, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(!s.contains("Duration:"), "{s}");
+    }
+
+    #[test]
+    fn print_lastwake_verbose_renders_kernel_and_acpi_sections() {
+        let report = LastWakeReport {
+            last_sleep: Some(ts("2025-04-29T01:15:18-0700")),
+            last_wake: Some(ts("2025-04-29T08:22:44-0700")),
+            wake_irq: Some(WakeIrq {
+                irq: "9".into(),
+                device: None,
+            }),
+            dmesg_wake: Some(vec![
+                "2025-04-29T08:22:44-0700 ACPI: Wakeup Device [LID0]".into(),
+            ]),
+            acpi_enabled: Some(vec![
+                crate::model::devicequery::AcpiWakeDevice {
+                    device: "GPP0".into(),
+                    state: "S4".into(),
+                    enabled: true,
+                    sysfs: Some("pci:0000:00:01.1".into()),
+                },
+                crate::model::devicequery::AcpiWakeDevice {
+                    device: "PWRB".into(),
+                    state: "S4".into(),
+                    enabled: true,
+                    sysfs: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, true, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("[KERNEL WAKE MESSAGES]"), "{s}");
+        assert!(s.contains("ACPI: Wakeup Device [LID0]"), "{s}");
+        assert!(s.contains("[ENABLED ACPI WAKE DEVICES]"), "{s}");
+        assert!(s.contains("  GPP0: S4 (pci:0000:00:01.1)"), "{s}");
+        assert!(
+            s.contains("  PWRB: S4\n"),
+            "PWRB has no sysfs — must render bare: {s}",
+        );
+        // No Device line: irq.device is None.
+        assert!(!s.contains("Device:"), "{s}");
+    }
+
+    #[test]
+    fn print_lastwake_verbose_acpi_empty_renders_none() {
+        let report = LastWakeReport {
+            acpi_enabled: Some(vec![]),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, true, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("[ENABLED ACPI WAKE DEVICES]"), "{s}");
+        assert!(s.contains("  None."), "{s}");
+    }
+
+    #[test]
+    fn print_lastwake_verbose_omits_kernel_section_when_empty() {
+        // Verbose flag but no dmesg lines — section omitted entirely.
+        let report = LastWakeReport {
+            dmesg_wake: Some(vec![]),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, true, None, &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(!s.contains("[KERNEL WAKE MESSAGES]"), "{s}");
+    }
+
+    #[test]
+    fn print_lastwake_history_renders_events() {
+        let report = LastWakeReport {
+            history: Some(vec![
+                SleepEvent {
+                    time: ts("2025-04-29T01:15:18-0700"),
+                    kind: SleepEventKind::Sleep,
+                },
+                SleepEvent {
+                    time: ts("2025-04-29T08:22:44-0700"),
+                    kind: SleepEventKind::Wake,
+                },
+            ]),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, false, Some(5), &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("[RECENT SLEEP/WAKE HISTORY]"), "{s}");
+        assert!(s.contains("2025-04-29T01:15:18-0700 - SLEEP"), "{s}");
+        assert!(s.contains("2025-04-29T08:22:44-0700 - WAKE"), "{s}");
+    }
+
+    #[test]
+    fn print_lastwake_history_empty_renders_no_events() {
+        let report = LastWakeReport {
+            history: Some(vec![]),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        print_lastwake(&report, false, Some(5), &mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("[RECENT SLEEP/WAKE HISTORY]"), "{s}");
+        assert!(s.contains("  No sleep/wake events found."), "{s}");
+    }
+
+    #[test]
+    fn truncate_kernel_wake_line_no_truncation_under_70() {
+        let line = "x".repeat(70);
+        assert_eq!(truncate_kernel_wake_line(&line), line);
+    }
+
+    #[test]
+    fn truncate_kernel_wake_line_truncates_at_67_with_ellipsis() {
+        // 71 chars in → 67 head + "..." = 70 chars out.
+        let line = "x".repeat(71);
+        let truncated = truncate_kernel_wake_line(&line);
+        assert_eq!(truncated.len(), 70);
+        assert!(truncated.ends_with("..."));
+        assert_eq!(truncated.chars().filter(|&c| c == 'x').count(), 67);
     }
 }

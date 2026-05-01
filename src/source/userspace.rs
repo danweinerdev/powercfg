@@ -208,9 +208,6 @@ fn parse_property_line(line: &str) -> Option<(&str, &str)> {
 /// the call returns `Err(SourceError::Subprocess(_))` — the caller in
 /// `cmd::lastwake` swallows this so the verbose section is just absent
 /// rather than failing the whole report.
-// TODO(phase-4.2): consumed by cmd::lastwake::run (verbose mode);
-// drop allow then.
-#[allow(dead_code)]
 pub fn dmesg_wake_lines() -> Result<Vec<String>, SourceError> {
     let mut cmd = Command::new("dmesg");
     cmd.args(["--time-format=iso"]);
