@@ -4,15 +4,16 @@
 //! verbatim: six subcommands (`requests`, `lastwake`, `devicequery`,
 //! `sleepstates`, `waketimers`, `energy`) with their per-command flags
 //! (`-v`/`--verbose` everywhere, `-n`/`--history` on `lastwake`,
-//! `--enabled-only` on `devicequery`). The one addition is the global
-//! `--json` flag that Phase 5 will plumb through into a `serde_json`
-//! writer; until then the `Format` it parses to is carried but unused.
+//! `--enabled-only` on `devicequery`). The global `--json` flag selects
+//! the [`Format`] each command's `run` branches on after building its
+//! report.
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Output format for command reports. `Text` is the default and matches the
-/// Python tool's printed output verbatim; `Json` is a Phase 5 addition that
-/// serializes the underlying report struct.
+/// Output format for command reports. `Text` is the default and matches
+/// the Python tool's printed output verbatim; `Json` serializes the
+/// underlying report struct via `serde_json` (see `docs/json-schema.md`
+/// for the per-command shape).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Format {
     #[default]
@@ -30,7 +31,7 @@ pub enum Format {
 pub struct Cli {
     /// Emit the report as JSON instead of formatted text.
     ///
-    /// Wired in Phase 5; subcommand handlers ignore this until then.
+    /// See `docs/json-schema.md` for the per-command output shape.
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -40,11 +41,6 @@ pub struct Cli {
 
 impl Cli {
     /// Resolve the chosen output format from parsed flags.
-    ///
-    /// Currently unused at dispatch time but exposed for the format wiring
-    /// landing in Phase 5.
-    // TODO(phase-5): wire `--json` through dispatch and drop this allow.
-    #[allow(dead_code)]
     pub fn format(&self) -> Format {
         if self.json {
             Format::Json

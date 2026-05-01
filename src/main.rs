@@ -19,6 +19,9 @@ fn main() -> std::process::ExitCode {
         .init();
 
     let cli = cli::Cli::parse();
+    // Resolve the output format once; every command's Args carries it so
+    // each handler can branch on text-vs-JSON after building its report.
+    let format = cli.format();
 
     // Each variant destructures into the matching `cmd::*::Args` struct.
     // Future args (Format, SysRoot, etc.) extend the Args struct rather than
@@ -27,11 +30,13 @@ fn main() -> std::process::ExitCode {
         cli::Command::Requests { verbose } => cmd::requests::run(cmd::requests::Args {
             verbose,
             root: SysRoot::from_env(),
+            format,
         }),
         cli::Command::Lastwake { verbose, history } => cmd::lastwake::run(cmd::lastwake::Args {
             verbose,
             history,
             root: SysRoot::from_env(),
+            format,
         }),
         cli::Command::Devicequery {
             verbose,
@@ -40,18 +45,22 @@ fn main() -> std::process::ExitCode {
             verbose,
             enabled_only,
             root: SysRoot::from_env(),
+            format,
         }),
         cli::Command::Sleepstates { verbose } => cmd::sleepstates::run(cmd::sleepstates::Args {
             verbose,
             root: SysRoot::from_env(),
+            format,
         }),
         cli::Command::Waketimers { verbose } => cmd::waketimers::run(cmd::waketimers::Args {
             verbose,
             root: SysRoot::from_env(),
+            format,
         }),
         cli::Command::Energy { verbose } => cmd::energy::run(cmd::energy::Args {
             verbose,
             root: SysRoot::from_env(),
+            format,
         }),
     };
 

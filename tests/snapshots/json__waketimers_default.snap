@@ -1,0 +1,9 @@
+---
+source: tests/json.rs
+assertion_line: 319
+expression: v
+---
+{
+  "rtc_wakealarm": null,
+  "wake_timers": "[redacted-live-dbus]"
+}

@@ -1,0 +1,37 @@
+---
+source: tests/json.rs
+assertion_line: 264
+expression: v
+---
+{
+  "acpi_devices": [
+    {
+      "device": "GPP0",
+      "enabled": true,
+      "state": "S4",
+      "sysfs": "pci:0000:00:01.1"
+    },
+    {
+      "device": "GPP8",
+      "enabled": false,
+      "state": "S4",
+      "sysfs": "pci:0000:00:08.1"
+    },
+    {
+      "device": "PWRB",
+      "enabled": true,
+      "state": "S4",
+      "sysfs": null
+    }
+  ],
+  "usb_devices": [
+    {
+      "device": "1-2",
+      "name": "Logitech USB Receiver"
+    },
+    {
+      "device": "2-1",
+      "name": "2-1"
+    }
+  ]
+}

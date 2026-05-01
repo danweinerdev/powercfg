@@ -4,18 +4,21 @@
 
 use anyhow::Result;
 
-use crate::format::text;
+use crate::cli::Format;
+use crate::format::{json, text};
 use crate::model::energy::EnergyReport;
 use crate::paths::SysRoot;
 use crate::source::sysfs;
 
 /// Per-call arguments. Mirrors the clap `Command::Energy` variant fields
 /// plus the `SysRoot` injected by `main` so integration tests can point
-/// the readers at fixture trees via `POWERCFG_SYSROOT`.
+/// the readers at fixture trees via `POWERCFG_SYSROOT`, and the chosen
+/// output [`Format`] (text vs. JSON).
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,
     pub root: SysRoot,
+    pub format: Format,
 }
 
 /// Build an [`EnergyReport`] from the four sysfs readers and hand it
@@ -45,6 +48,9 @@ pub fn run(args: Args) -> Result<()> {
         Err(e) => tracing::debug!("read_throttle_status: {e}"),
     }
 
-    text::print_energy(&report, args.verbose);
+    match args.format {
+        Format::Text => text::print_energy(&report, args.verbose),
+        Format::Json => json::write_report(&report)?,
+    }
     Ok(())
 }

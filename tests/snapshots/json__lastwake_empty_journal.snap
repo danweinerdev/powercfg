@@ -1,0 +1,10 @@
+---
+source: tests/json.rs
+assertion_line: 207
+expression: v
+---
+{
+  "last_sleep": null,
+  "last_wake": null,
+  "wake_irq": null
+}

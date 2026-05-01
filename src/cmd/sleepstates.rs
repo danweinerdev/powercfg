@@ -9,17 +9,20 @@
 
 use anyhow::Result;
 
-use crate::format::text;
+use crate::cli::Format;
+use crate::format::{json, text};
 use crate::model::sleepstates::SleepStatesReport;
 use crate::paths::SysRoot;
 use crate::source::{procfs, sysfs};
 
 /// Per-call arguments. Mirrors the clap `Command::Sleepstates` variant
-/// fields plus the `SysRoot` resolved by `main`.
+/// fields plus the `SysRoot` resolved by `main` and the chosen output
+/// [`Format`] (text vs. JSON).
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,
     pub root: SysRoot,
+    pub format: Format,
 }
 
 /// Build a [`SleepStatesReport`] by reading sysfs/procfs under
@@ -64,6 +67,9 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    text::print_sleepstates(&report, args.verbose);
+    match args.format {
+        Format::Text => text::print_sleepstates(&report, args.verbose),
+        Format::Json => json::write_report(&report)?,
+    }
     Ok(())
 }

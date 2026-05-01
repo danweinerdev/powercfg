@@ -2,4 +2,5 @@
 
 pub mod duration;
 pub mod freq;
+pub mod json;
 pub mod text;

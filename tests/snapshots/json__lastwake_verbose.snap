@@ -1,0 +1,28 @@
+---
+source: tests/json.rs
+assertion_line: 163
+expression: v
+---
+{
+  "acpi_enabled_devices": [
+    {
+      "device": "GPP0",
+      "enabled": true,
+      "state": "S4",
+      "sysfs": "pci:0000:00:01.1"
+    },
+    {
+      "device": "PWRB",
+      "enabled": true,
+      "state": "S4",
+      "sysfs": null
+    }
+  ],
+  "kernel_messages": "[redacted-live-dmesg]",
+  "last_sleep": "2025-04-29T01:15:18-07:00",
+  "last_wake": "2025-04-29T08:22:44-07:00",
+  "wake_irq": {
+    "device": "9-fasteoi acpi",
+    "irq": "9"
+  }
+}

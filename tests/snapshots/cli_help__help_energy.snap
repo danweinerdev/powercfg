@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 68
 expression: stdout
 ---
 Display energy and power status
@@ -10,7 +11,7 @@ Options:
       --json
           Emit the report as JSON instead of formatted text.
           
-          Wired in Phase 5; subcommand handlers ignore this until then.
+          See `docs/json-schema.md` for the per-command output shape.
 
   -v, --verbose
           Show additional details

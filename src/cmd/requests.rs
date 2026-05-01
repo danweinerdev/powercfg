@@ -6,7 +6,8 @@
 
 use anyhow::Result;
 
-use crate::format::text;
+use crate::cli::Format;
+use crate::format::{json, text};
 use crate::model::requests::RequestsReport;
 use crate::paths::SysRoot;
 use crate::source::{dbus, procfs, sysfs, userspace};
@@ -27,11 +28,13 @@ const VM_COMM_NAMES: &[&str] = &[
 
 /// Per-call arguments. Mirrors the clap `Command::Requests` variant
 /// fields plus the `SysRoot` injected by `main` so integration tests
-/// can point procfs/sysfs readers at fixture trees.
+/// can point procfs/sysfs readers at fixture trees, and the chosen
+/// output [`Format`] (text vs. JSON).
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,
     pub root: SysRoot,
+    pub format: Format,
 }
 
 /// Build a [`RequestsReport`] from the four data sources and hand it
@@ -73,6 +76,11 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    text::print_requests(&report, args.verbose, &mut std::io::stdout().lock())?;
+    match args.format {
+        Format::Text => {
+            text::print_requests(&report, args.verbose, &mut std::io::stdout().lock())?;
+        }
+        Format::Json => json::write_report(&report)?,
+    }
     Ok(())
 }

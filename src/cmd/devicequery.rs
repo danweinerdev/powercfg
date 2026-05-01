@@ -4,18 +4,21 @@
 
 use anyhow::Result;
 
-use crate::format::text;
+use crate::cli::Format;
+use crate::format::{json, text};
 use crate::model::devicequery::DeviceQueryReport;
 use crate::paths::SysRoot;
 use crate::source::{procfs, sysfs};
 
 /// Per-call arguments. Mirrors the clap `Command::Devicequery` variant
-/// fields plus the `SysRoot` resolved by `main`.
+/// fields plus the `SysRoot` resolved by `main` and the chosen output
+/// [`Format`] (text vs. JSON).
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,
     pub enabled_only: bool,
     pub root: SysRoot,
+    pub format: Format,
 }
 
 /// Build a [`DeviceQueryReport`] by reading procfs (ACPI wakeup) and
@@ -36,6 +39,14 @@ pub fn run(args: Args) -> Result<()> {
         Err(e) => tracing::debug!("read_usb_wakeup_devices: {e}"),
     }
 
-    text::print_devicequery(&report, &args.root, args.verbose, args.enabled_only);
+    match args.format {
+        Format::Text => {
+            // The text printer reaches back into sysfs (PCI descriptors,
+            // wakeup-stat counters) — the JSON branch deliberately skips
+            // that enrichment because the JSON contract is shape-only.
+            text::print_devicequery(&report, &args.root, args.verbose, args.enabled_only);
+        }
+        Format::Json => json::write_report(&report)?,
+    }
     Ok(())
 }

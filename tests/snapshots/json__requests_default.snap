@@ -1,0 +1,11 @@
+---
+source: tests/json.rs
+assertion_line: 71
+expression: v
+---
+{
+  "audio_streams": "[redacted-live-pactl]",
+  "inhibitors": "[redacted-live-dbus]",
+  "vms": "[redacted-live-procfs]",
+  "wake_locks": "[redacted-live-procfs]"
+}

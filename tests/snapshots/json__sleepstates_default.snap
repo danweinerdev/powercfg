@@ -1,0 +1,35 @@
+---
+source: tests/json.rs
+assertion_line: 283
+expression: v
+---
+{
+  "disk_current": "platform",
+  "disk_modes": [
+    "platform",
+    "shutdown",
+    "reboot"
+  ],
+  "mem_current": "s2idle",
+  "mem_modes": [
+    "s2idle",
+    "deep"
+  ],
+  "states": [
+    "freeze",
+    "mem",
+    "disk"
+  ],
+  "swaps": [
+    {
+      "device": "/dev/dm-0",
+      "size_kb": 16777212,
+      "type": "partition"
+    },
+    {
+      "device": "/dev/zram0",
+      "size_kb": 8388604,
+      "type": "partition"
+    }
+  ]
+}

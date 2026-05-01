@@ -1,0 +1,13 @@
+---
+source: tests/json.rs
+assertion_line: 132
+expression: v
+---
+{
+  "last_sleep": "2025-04-29T01:15:18-07:00",
+  "last_wake": "2025-04-29T08:22:44-07:00",
+  "wake_irq": {
+    "device": "9-fasteoi acpi",
+    "irq": "9"
+  }
+}

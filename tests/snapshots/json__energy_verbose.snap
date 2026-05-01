@@ -1,0 +1,50 @@
+---
+source: tests/json.rs
+assertion_line: 369
+expression: v
+---
+{
+  "cpu": {
+    "cpu_count": 16,
+    "cur_freq_khz": 3400000,
+    "driver": "amd-pstate-epp",
+    "epp": "balance_performance",
+    "epp_available": "default performance balance_performance balance_power power",
+    "governor": "powersave",
+    "max_freq_khz": 4800000,
+    "min_freq_khz": 400000
+  },
+  "supplies": [
+    {
+      "capacity_pct": null,
+      "level": null,
+      "name": "AC",
+      "power_uw": null,
+      "status": "Discharging",
+      "type": "Mains"
+    },
+    {
+      "capacity_pct": 87,
+      "level": "Normal",
+      "name": "BAT0",
+      "power_uw": 12500000,
+      "status": "Discharging",
+      "type": "Battery"
+    }
+  ],
+  "temperatures": [
+    {
+      "label": "Tctl",
+      "source": "k10temp",
+      "temp_c": 52.4
+    },
+    {
+      "label": "CPU",
+      "source": "k10temp",
+      "temp_c": 50.1
+    }
+  ],
+  "throttle": {
+    "throttle_count": 0
+  }
+}

@@ -11,7 +11,8 @@
 
 use anyhow::Result;
 
-use crate::format::text;
+use crate::cli::Format;
+use crate::format::{json, text};
 use crate::model::lastwake::{LastWakeReport, WakeIrq};
 use crate::paths::SysRoot;
 use crate::source::{journal, procfs, sysfs, userspace};
@@ -26,12 +27,14 @@ const HISTORY_SINCE: &str = "30 days ago";
 
 /// Per-call arguments. Mirrors the clap `Command::Lastwake` variant
 /// fields plus the `SysRoot` injected by `main` so integration tests
-/// can point sysfs/procfs readers at fixture trees.
+/// can point sysfs/procfs readers at fixture trees, and the chosen
+/// output [`Format`] (text vs. JSON).
 #[derive(Debug)]
 pub struct Args {
     pub verbose: bool,
     pub history: Option<usize>,
     pub root: SysRoot,
+    pub format: Format,
 }
 
 /// Build a [`LastWakeReport`] from the journal + sysfs/procfs sources
@@ -91,11 +94,16 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    text::print_lastwake(
-        &report,
-        args.verbose,
-        args.history,
-        &mut std::io::stdout().lock(),
-    )?;
+    match args.format {
+        Format::Text => {
+            text::print_lastwake(
+                &report,
+                args.verbose,
+                args.history,
+                &mut std::io::stdout().lock(),
+            )?;
+        }
+        Format::Json => json::write_report(&report)?,
+    }
     Ok(())
 }

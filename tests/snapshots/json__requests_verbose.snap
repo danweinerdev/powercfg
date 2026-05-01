@@ -1,0 +1,21 @@
+---
+source: tests/json.rs
+assertion_line: 93
+expression: v
+---
+{
+  "audio_streams": "[redacted-live-pactl]",
+  "inhibitors": "[redacted-live-dbus]",
+  "usb_wakeup": [
+    {
+      "device": "1-2",
+      "name": "Logitech USB Receiver"
+    },
+    {
+      "device": "2-1",
+      "name": "2-1"
+    }
+  ],
+  "vms": "[redacted-live-procfs]",
+  "wake_locks": "[redacted-live-procfs]"
+}

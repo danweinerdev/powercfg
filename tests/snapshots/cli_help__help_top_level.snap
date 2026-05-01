@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 20
 expression: stdout
 ---
 Linux power configuration utility (similar to Windows powercfg)
@@ -19,7 +20,7 @@ Options:
       --json
           Emit the report as JSON instead of formatted text.
           
-          Wired in Phase 5; subcommand handlers ignore this until then.
+          See `docs/json-schema.md` for the per-command output shape.
 
   -h, --help
           Print help (see a summary with '-h')

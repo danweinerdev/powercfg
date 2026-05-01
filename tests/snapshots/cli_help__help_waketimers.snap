@@ -1,5 +1,6 @@
 ---
 source: tests/cli_help.rs
+assertion_line: 61
 expression: stdout
 ---
 Display scheduled wake timers
@@ -10,7 +11,7 @@ Options:
       --json
           Emit the report as JSON instead of formatted text.
           
-          Wired in Phase 5; subcommand handlers ignore this until then.
+          See `docs/json-schema.md` for the per-command output shape.
 
   -v, --verbose
           Show all scheduled timers, not just wake-capable ones
