@@ -30,9 +30,16 @@ impl TimerEntry {
     /// `YYYY-MM-DD HH:MM:SS TZ`, or `"n/a"` for the systemd sentinels
     /// (`0` = unscheduled, `u64::MAX` = "no next").
     ///
-    /// Uses `chrono::Local` to match the Python tool's
-    /// `datetime.fromtimestamp` behavior — formatting is locale/TZ
-    /// dependent. Snapshot tests force `TZ=UTC` for stability.
+    /// Uses `chrono::Local`, which on Linux delegates to
+    /// `iana-time-zone` reading `/etc/localtime` (NOT `$TZ`). This
+    /// matches the Python tool's `datetime.fromtimestamp` semantics
+    /// in spirit but diverges in one detail: the `%Z` specifier
+    /// renders as a numeric offset (`+00:00`, `-07:00`) when
+    /// `iana-time-zone` can't resolve a name, where Python always
+    /// produces a zone abbreviation (`UTC`, `PDT`). Both are valid
+    /// timestamps; users on most desktops will see numeric. If
+    /// abbreviation parity becomes important, pulling in `chrono-tz`
+    /// would resolve named zones — not a current dependency.
     pub fn next_elapse_display(&self) -> String {
         const MAX: u64 = u64::MAX;
         match self.next_elapse_realtime_us {

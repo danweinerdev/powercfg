@@ -1701,9 +1701,16 @@ mod tests {
         }
     }
 
-    /// Set TZ for the duration of the test. Caller must already hold
-    /// `TZ_LOCK`. chrono::Local re-reads `TZ` from the environment on
-    /// each `timestamp_opt` call, so this works without process restart.
+    /// Set `TZ` for the duration of the test. Caller must already hold
+    /// `TZ_LOCK`.
+    ///
+    /// **Note**: this does NOT influence `chrono::Local` on Linux.
+    /// chrono ≥0.4.20 delegates to `iana-time-zone`, which reads
+    /// `/etc/localtime` (a symlink to a zoneinfo file), not the `TZ`
+    /// env var. The env-mutation here is kept for any future test that
+    /// runs Rust's own time crate (which does honor `TZ`) or shells
+    /// out to a binary that does. The TZ-bearing assertions below are
+    /// written so they pass under whatever zone the host is running.
     ///
     /// SAFETY: `TZ_LOCK` is held by the caller.
     unsafe fn set_tz(tz: &str) {
@@ -1714,12 +1721,19 @@ mod tests {
     fn read_rtc_wakealarm_typical_formats_local_time() {
         let _lock = TZ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _tz = TzGuard::capture();
-        // SAFETY: TZ_LOCK is held.
+        // SAFETY: TZ_LOCK is held. (See set_tz doc — this doesn't
+        // actually steer chrono::Local on Linux, but we keep the env
+        // hygiene so future tests that DO honor TZ are isolated.)
         unsafe { set_tz("UTC") };
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = SysRoot::new(tmp.path());
-        // 1745939400 epoch -> 2025-04-29 14:30:00 UTC.
+        // Epoch 1745939400 = 2025-04-29 14:30:00 UTC. The format
+        // string only contains date+time, no timezone abbreviation,
+        // so the YYYY-MM- prefix is stable across all real-world UTC
+        // offsets (UTC-12 still puts this in 2025-04-29, UTC+14 in
+        // 2025-04-30 — both start with `2025-04-`). The starts_with
+        // assertion below is robust to host TZ.
         write_fixture(&root, "sys/class/rtc/rtc0/wakealarm", "1745939400\n");
 
         let s = read_rtc_wakealarm(&root)
@@ -1738,7 +1752,9 @@ mod tests {
             };
             assert!(ok, "char {i} of {s:?} doesn't match format");
         }
-        assert!(s.starts_with("2025-"), "TZ=UTC should yield 2025-: {s}");
+        // Year is 2025 in every UTC offset; the day rolls but the
+        // year is stable, so this assertion holds regardless of host TZ.
+        assert!(s.starts_with("2025-04-"), "expected 2025-04- prefix: {s}");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use anyhow::Result;
 
 use crate::format::text;
-use crate::model::waketimers::WakeTimersReport;
+use crate::model::waketimers::{TimerEntry, WakeTimersReport};
 use crate::paths::SysRoot;
 use crate::source::{dbus, sysfs};
 
@@ -34,7 +34,7 @@ pub fn run(args: Args) -> Result<()> {
     match dbus::system_bus() {
         Ok(conn) => match dbus::list_systemd_timers(&conn) {
             Ok(timers) => {
-                report.wake_timers = timers.iter().filter(|t| t.wake_system).cloned().collect();
+                report.wake_timers = wake_capable(&timers);
                 report.all_timers = timers;
             }
             Err(e) => tracing::debug!("list_systemd_timers: {e}"),
@@ -49,4 +49,58 @@ pub fn run(args: Args) -> Result<()> {
 
     text::print_waketimers(&report, args.verbose, &mut std::io::stdout().lock())?;
     Ok(())
+}
+
+/// Return the subset of `timers` whose `wake_system` flag is true.
+///
+/// Extracted as a free function so the partition predicate is unit-
+/// testable without a live D-Bus connection — `run` itself can't
+/// easily be tested because it opens a real system bus.
+fn wake_capable(timers: &[TimerEntry]) -> Vec<TimerEntry> {
+    timers.iter().filter(|t| t.wake_system).cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_capable_includes_only_wake_system_true() {
+        let timers = vec![
+            TimerEntry {
+                unit: "snapshot.timer".into(),
+                wake_system: true,
+                next_elapse_realtime_us: 1_000_000,
+            },
+            TimerEntry {
+                unit: "apt-daily.timer".into(),
+                wake_system: false,
+                next_elapse_realtime_us: 2_000_000,
+            },
+            TimerEntry {
+                unit: "fwupd-refresh.timer".into(),
+                wake_system: true,
+                next_elapse_realtime_us: 3_000_000,
+            },
+        ];
+        let wake = wake_capable(&timers);
+        assert_eq!(wake.len(), 2, "two of three should be wake-capable");
+        assert_eq!(wake[0].unit, "snapshot.timer");
+        assert_eq!(wake[1].unit, "fwupd-refresh.timer");
+    }
+
+    #[test]
+    fn wake_capable_empty_input_returns_empty() {
+        assert!(wake_capable(&[]).is_empty());
+    }
+
+    #[test]
+    fn wake_capable_all_false_returns_empty() {
+        let timers = vec![TimerEntry {
+            unit: "apt-daily.timer".into(),
+            wake_system: false,
+            next_elapse_realtime_us: 0,
+        }];
+        assert!(wake_capable(&timers).is_empty());
+    }
 }
