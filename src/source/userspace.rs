@@ -130,6 +130,15 @@ impl PartialStream {
     }
 
     fn set_property(&mut self, key: &str, value: &str) {
+        // Empty values (`application.name = ""`) are treated as absent
+        // — assigning `Some("")` here would render through the printer
+        // as a leading-space artifact ` (binary, PID: N)` for the
+        // name+binary+pid arm. pactl shouldn't emit empty values in
+        // normal operation, but the guard is cheap and forecloses the
+        // failure mode.
+        if value.is_empty() {
+            return;
+        }
         match key {
             "application.name" => self.application_name = Some(value.to_owned()),
             "application.process.id" => {
@@ -167,9 +176,18 @@ fn parse_sink_input_header(line: &str) -> Option<String> {
 ///
 /// Splits on the first ` = "` rather than `=` alone — the value can
 /// contain `=` (e.g. `format.sample_format = "\"float32le\""`) but
-/// the key never does. Returns `None` if the close quote can't be
-/// found on the same line; multi-line values are silently dropped per
-/// the parser docstring.
+/// the key never does. The trailing `"` is stripped via
+/// `strip_suffix`, which removes exactly one character; embedded
+/// escaped quotes (`\"`) are NOT unescaped — they survive verbatim
+/// in the returned slice. This is acceptable because the three keys
+/// the caller cares about (`application.name`,
+/// `application.process.id`, `application.process.binary`) always
+/// carry plain strings in real pactl output. If a future caller
+/// extracts `format.sample_format` or another value with embedded
+/// quotes, they need to unescape themselves.
+///
+/// Returns `None` if the line doesn't end with `"` (multi-line values
+/// or a malformed entry); the parser's outer loop just moves on.
 fn parse_property_line(line: &str) -> Option<(&str, &str)> {
     let (key, after) = line.split_once(" = \"")?;
     let value = after.strip_suffix('"')?;
@@ -330,6 +348,48 @@ Sink Input #3
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].application_name.as_deref(), Some("Firefox"));
         assert_eq!(streams[0].pid, None);
+        assert_eq!(streams[0].binary.as_deref(), Some("firefox"));
+    }
+
+    #[test]
+    fn parse_pactl_verbose_space_indented_properties() {
+        // PipeWire's pactl-compat layer has been observed to emit
+        // space-indented property blocks instead of PulseAudio's
+        // tabs. The parser uses trim_start before the property-line
+        // match precisely so this works — pin it.
+        let stdout = "\
+Sink Input #11
+        Driver: pipewire-native.c
+        Properties:
+                application.name = \"PipeWireApp\"
+                application.process.id = \"99\"
+                application.process.binary = \"pwapp\"
+";
+        let streams = parse_pactl_verbose(stdout);
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].id, "11");
+        assert_eq!(streams[0].application_name.as_deref(), Some("PipeWireApp"));
+        assert_eq!(streams[0].pid, Some(99));
+        assert_eq!(streams[0].binary.as_deref(), Some("pwapp"));
+    }
+
+    #[test]
+    fn parse_pactl_verbose_empty_property_value_is_treated_as_absent() {
+        // `application.name = ""` should NOT populate the field with
+        // an empty string — that would render through the printer as
+        // a leading-space artifact `" (binary, PID: N)"`. Treat
+        // empty values as absent.
+        let stdout = "\
+Sink Input #5
+\tProperties:
+\t\tapplication.name = \"\"
+\t\tapplication.process.id = \"42\"
+\t\tapplication.process.binary = \"firefox\"
+";
+        let streams = parse_pactl_verbose(stdout);
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].application_name, None);
+        assert_eq!(streams[0].pid, Some(42));
         assert_eq!(streams[0].binary.as_deref(), Some("firefox"));
     }
 
