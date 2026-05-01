@@ -28,8 +28,8 @@ fn stdout(output: &assert_cmd::assert::Assert) -> String {
 fn lastwake_default() {
     // sys-typical has pm_wakeup_irq=9, proc/interrupts row 9 →
     // "9-fasteoi acpi". The journal fixture's last suspend entry is
-    // 2025-04-29T01:15:18-0700 and last suspend exit is
-    // 2025-04-29T08:22:44-0700 → duration 7h 7m 26s.
+    // 2025-04-29T01:15:18-07:00 and last suspend exit is
+    // 2025-04-29T08:22:44-07:00 → duration 7h 7m 26s.
     let assertion = powercfg()
         .env("POWERCFG_SYSROOT", "tests/fixtures/sys-typical")
         .env(
@@ -41,11 +41,11 @@ fn lastwake_default() {
         .success();
     let out = stdout(&assertion);
     assert!(
-        out.contains("Sleep time: 2025-04-29T01:15:18-0700"),
+        out.contains("Sleep time: 2025-04-29T01:15:18-07:00"),
         "default mode should show the most recent suspend entry: {out}",
     );
     assert!(
-        out.contains("Wake time:  2025-04-29T08:22:44-0700"),
+        out.contains("Wake time:  2025-04-29T08:22:44-07:00"),
         "default mode should show the most recent suspend exit: {out}",
     );
     assert!(
@@ -116,6 +116,10 @@ fn lastwake_verbose() {
     // section before snapshotting — assertions above pin the rest of
     // the verbose-only structure.
     let stripped = strip_kernel_wake_section(&out);
+    assert!(
+        !stripped.contains("[KERNEL WAKE MESSAGES]"),
+        "strip helper must remove the kernel-wake section header: {stripped}",
+    );
     insta::assert_snapshot!("lastwake_verbose", stripped);
 }
 
@@ -170,17 +174,17 @@ fn lastwake_history() {
     );
     // Last 5 events: events[1..6] from the 6-event fixture.
     assert!(
-        out.contains("2025-04-01T07:45:12-0700 - WAKE"),
+        out.contains("2025-04-01T07:45:12-07:00 - WAKE"),
         "earliest of the trailing-5 should be the 2025-04-01 wake: {out}",
     );
     assert!(
-        out.contains("2025-04-29T08:22:44-0700 - WAKE"),
+        out.contains("2025-04-29T08:22:44-07:00 - WAKE"),
         "last event should be the 2025-04-29 wake: {out}",
     );
     // The very first event (2025-04-01 03:30 sleep) is OUTSIDE the
     // 5-event tail and must NOT appear.
     assert!(
-        !out.contains("2025-04-01T03:30:21-0700"),
+        !out.contains("2025-04-01T03:30:21-07:00"),
         "oldest event should be trimmed at -n 5: {out}",
     );
     insta::assert_snapshot!("lastwake_history", out);

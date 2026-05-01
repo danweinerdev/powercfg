@@ -1,6 +1,5 @@
 ---
 source: tests/lastwake.rs
-assertion_line: 72
 expression: out
 ---
 LAST WAKE INFORMATION
@@ -8,8 +7,8 @@ LAST WAKE INFORMATION
 
 [LAST SLEEP/WAKE CYCLE]
 ------------------------------
-  Sleep time: 2025-04-29T01:15:18-0700
-  Wake time:  2025-04-29T08:22:44-0700
+  Sleep time: 2025-04-29T01:15:18-07:00
+  Wake time:  2025-04-29T08:22:44-07:00
   Duration:   7h 7m 26s
 
 [WAKE SOURCE]

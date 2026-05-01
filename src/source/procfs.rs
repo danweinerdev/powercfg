@@ -633,6 +633,16 @@ NMI:          0          0   Non-maskable interrupts
     }
 
     #[test]
+    fn find_irq_info_two_token_row_returns_label_and_token() {
+        // 2-token rows are unusual but Python's `" ".join(parts[-2:])`
+        // returns "<irq>: <token>" verbatim. Lock the behavior so the
+        // 2-token branch in find_irq_info doesn't drift unnoticed.
+        let input = "  9:        acpi\n";
+        let info = find_irq_info(input, "9").expect("match");
+        assert_eq!(info, "9: acpi");
+    }
+
+    #[test]
     fn read_irq_info_via_fixture_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = SysRoot::new(tmp.path());

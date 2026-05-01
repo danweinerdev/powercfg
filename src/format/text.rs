@@ -672,11 +672,12 @@ pub fn print_waketimers(
 const KERNEL_WAKE_LINE_MAX: usize = 70;
 
 /// Render a `DateTime<FixedOffset>` in the same shape `journalctl -o
-/// short-iso` produced (e.g. `2025-04-29T08:22:44-0700`). Python keeps
+/// short-iso` produces (e.g. `2025-04-29T08:22:44-07:00`). Python keeps
 /// the raw matched string; the Rust caller has a parsed `DateTime` so
-/// we re-format with the equivalent specifier.
+/// we re-format with the equivalent specifier. `%:z` (with colon) is
+/// what real `journalctl` emits — `%z` would silently drift.
 fn format_journal_ts(ts: chrono::DateTime<chrono::FixedOffset>) -> String {
-    ts.format("%Y-%m-%dT%H:%M:%S%z").to_string()
+    ts.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 /// Print a [`LastWakeReport`] in the Python tool's text format
@@ -1349,8 +1350,8 @@ mod tests {
         let mut out = Vec::new();
         print_lastwake(&report, false, None, &mut out).unwrap();
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("Sleep time: 2025-04-29T01:15:18-0700"), "{s}");
-        assert!(s.contains("Wake time:  2025-04-29T08:22:44-0700"), "{s}");
+        assert!(s.contains("Sleep time: 2025-04-29T01:15:18-07:00"), "{s}");
+        assert!(s.contains("Wake time:  2025-04-29T08:22:44-07:00"), "{s}");
         assert!(s.contains("Duration:   7h 7m 26s"), "duration wrong: {s}");
         assert!(s.contains("Wake IRQ: 9"), "{s}");
         assert!(s.contains("Device: 9-fasteoi acpi"), "{s}");
@@ -1489,8 +1490,8 @@ mod tests {
         print_lastwake(&report, false, Some(5), &mut out).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("[RECENT SLEEP/WAKE HISTORY]"), "{s}");
-        assert!(s.contains("2025-04-29T01:15:18-0700 - SLEEP"), "{s}");
-        assert!(s.contains("2025-04-29T08:22:44-0700 - WAKE"), "{s}");
+        assert!(s.contains("2025-04-29T01:15:18-07:00 - SLEEP"), "{s}");
+        assert!(s.contains("2025-04-29T08:22:44-07:00 - WAKE"), "{s}");
     }
 
     #[test]

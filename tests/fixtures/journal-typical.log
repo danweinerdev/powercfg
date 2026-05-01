@@ -1,7 +1,7 @@
 -- Boot 8a3c1f4e2d6f4b9a8c5d7e1f0a2b3c4d --
-2025-04-01T03:30:21-0700 hostname kernel: PM: suspend entry (s2idle)
-2025-04-01T07:45:12-0700 hostname kernel: PM: suspend exit
-2025-04-15T22:10:05-0700 hostname kernel: PM: suspend entry (s2idle)
-2025-04-16T07:55:33-0700 hostname kernel: PM: suspend exit
-2025-04-29T01:15:18-0700 hostname kernel: PM: suspend entry (s2idle)
-2025-04-29T08:22:44-0700 hostname kernel: PM: suspend exit
+2025-04-01T03:30:21-07:00 hostname kernel: PM: suspend entry (s2idle)
+2025-04-01T07:45:12-07:00 hostname kernel: PM: suspend exit
+2025-04-15T22:10:05-07:00 hostname kernel: PM: suspend entry (s2idle)
+2025-04-16T07:55:33-07:00 hostname kernel: PM: suspend exit
+2025-04-29T01:15:18-07:00 hostname kernel: PM: suspend entry (s2idle)
+2025-04-29T08:22:44-07:00 hostname kernel: PM: suspend exit
