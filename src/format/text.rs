@@ -534,10 +534,11 @@ pub fn print_requests(
         writeln!(out)?;
         writeln!(out, "[USB WAKEUP DEVICES]")?;
         writeln!(out, "{}", "-".repeat(30))?;
-        if report.usb_wakeup.is_empty() {
+        let devs = report.usb_wakeup.as_deref().unwrap_or(&[]);
+        if devs.is_empty() {
             writeln!(out, "  None.")?;
         } else {
-            for dev in &report.usb_wakeup {
+            for dev in devs {
                 writeln!(out, "  {} ({})", dev.name, dev.device)?;
             }
         }
@@ -890,7 +891,7 @@ mod tests {
                 pid: 5678,
                 comm: "qemu-system-x86".into(),
             }],
-            usb_wakeup: vec![],
+            usb_wakeup: None,
         }
     }
 
@@ -922,10 +923,10 @@ mod tests {
     #[test]
     fn print_requests_typical_verbose_adds_usb_section() {
         let mut report = typical_report();
-        report.usb_wakeup = vec![UsbWakeDevice {
+        report.usb_wakeup = Some(vec![UsbWakeDevice {
             device: "1-2".into(),
             name: "Logitech USB Receiver".into(),
-        }];
+        }]);
         let mut out = Vec::new();
         print_requests(&report, true, &mut out).unwrap();
         let s = String::from_utf8(out).unwrap();

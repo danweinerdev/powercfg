@@ -116,10 +116,12 @@ pub struct AudioStream {
 /// Top-level data for the `requests` subcommand. Built by
 /// `cmd::requests::run` from D-Bus, procfs, and userspace sources.
 ///
-/// JSON contract: every collection serializes as `[]` when empty
-/// (queryable but empty) and as a populated array otherwise. None of
-/// the top-level fields are omitted from the JSON object — the schema
-/// is stable across CLI flag combinations.
+/// JSON contract: queryable collections (`inhibitors`, `wake_locks`,
+/// `audio_streams`, `vms`) serialize as `[]` when empty and as a
+/// populated array otherwise — always present. `usb_wakeup` is
+/// `Option<Vec<_>>` and is omitted from JSON when `--verbose` is not
+/// set, matching the verbose-gated patterns in `lastwake` and
+/// `waketimers`.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RequestsReport {
@@ -131,10 +133,11 @@ pub struct RequestsReport {
     pub wake_locks: Vec<String>,
     pub audio_streams: Vec<AudioStream>,
     pub vms: Vec<ProcessInfo>,
-    /// Only populated when verbose=true; rendered as the "[USB
+    /// `Some` only when `--verbose` is set; rendered as the "[USB
     /// WAKEUP DEVICES]" section. The summary footer does NOT count
-    /// these (matches Python).
-    pub usb_wakeup: Vec<UsbWakeDevice>,
+    /// these (matches Python). Omitted from JSON when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usb_wakeup: Option<Vec<UsbWakeDevice>>,
 }
 
 #[cfg(test)]
@@ -208,22 +211,16 @@ mod tests {
         );
     }
 
-    /// Round-trip JSON: every top-level collection serializes as `[]`
-    /// when empty, never omitted. This is the locked contract for the
-    /// `requests` subcommand.
+    /// Round-trip JSON: queryable collections serialize as `[]` when
+    /// empty (never omitted); `usb_wakeup` is verbose-gated and is
+    /// omitted entirely when `--verbose` was not set (`None`).
     #[test]
     fn requests_report_empty_serializes_all_arrays() {
         let report = RequestsReport::default();
         let json = serde_json::to_string(&report).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
 
-        for key in [
-            "inhibitors",
-            "wake_locks",
-            "audio_streams",
-            "vms",
-            "usb_wakeup",
-        ] {
+        for key in ["inhibitors", "wake_locks", "audio_streams", "vms"] {
             assert!(
                 v[key].is_array(),
                 "key {key:?} should serialize as [] (got {:?})",
@@ -231,6 +228,27 @@ mod tests {
             );
             assert_eq!(v[key].as_array().unwrap().len(), 0);
         }
+        assert!(
+            v.get("usb_wakeup").is_none(),
+            "usb_wakeup must be omitted when --verbose was not set",
+        );
+    }
+
+    /// Verbose with no devices found → `usb_wakeup: []` (queried, empty).
+    /// Distinguishes "verbose set, none found" from "verbose not set".
+    #[test]
+    fn requests_report_verbose_empty_serializes_usb_wakeup_array() {
+        let report = RequestsReport {
+            usb_wakeup: Some(vec![]),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&report).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(
+            v["usb_wakeup"].is_array(),
+            "verbose-set + empty must serialize as [], not omitted",
+        );
+        assert_eq!(v["usb_wakeup"].as_array().unwrap().len(), 0);
     }
 
     /// Round-trip JSON: populated fields render as objects with the
@@ -267,7 +285,7 @@ mod tests {
                 pid: 9999,
                 comm: "qemu-system-x86".into(),
             }],
-            usb_wakeup: vec![],
+            usb_wakeup: None,
         };
         let json = serde_json::to_string(&report).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
@@ -284,8 +302,7 @@ mod tests {
         assert_eq!(v["audio_streams"][1]["application_name"], "Firefox");
         assert_eq!(v["audio_streams"][1]["pid"], 1234);
         assert_eq!(v["vms"][0]["comm"], "qemu-system-x86");
-        // usb_wakeup is empty Vec — array, not null.
-        assert!(v["usb_wakeup"].is_array());
-        assert_eq!(v["usb_wakeup"].as_array().unwrap().len(), 0);
+        // usb_wakeup is None (verbose not set in this fixture) — omitted.
+        assert!(v.get("usb_wakeup").is_none());
     }
 }

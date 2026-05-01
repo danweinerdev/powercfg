@@ -191,4 +191,24 @@ mod tests {
         assert_eq!(v["wake_irq"]["irq"], "9");
         assert_eq!(v["wake_irq"]["device"], "acpi");
     }
+
+    /// `wake_irq.device` absent (IRQ recorded but `/proc/interrupts`
+    /// has no row for it): serializes as `null`, not omitted.
+    #[test]
+    fn lastwake_report_wake_irq_device_none_serializes_null() {
+        let report = LastWakeReport {
+            wake_irq: Some(WakeIrq {
+                irq: "9".into(),
+                device: None,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["wake_irq"]["irq"], "9");
+        assert!(
+            v["wake_irq"]["device"].is_null(),
+            "device must serialize as null when None, not be omitted",
+        );
+    }
 }

@@ -68,7 +68,7 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.verbose {
         match sysfs::read_usb_wakeup_devices(&args.root) {
-            Ok(v) => report.usb_wakeup = v,
+            Ok(v) => report.usb_wakeup = Some(v),
             Err(e) => tracing::debug!("read_usb_wakeup_devices: {e}"),
         }
     }

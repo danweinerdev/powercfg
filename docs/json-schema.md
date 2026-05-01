@@ -43,11 +43,16 @@ default; pipe through `jq -c` for compact output.
     }
   ],
   "vms": [{ "pid": 1234, "comm": "qemu-system-x86" }],
-  "usb_wakeup": [{ "device": "1-2", "name": "Logitech Receiver" }]
+  "usb_wakeup": [                              // omitted unless --verbose
+    { "device": "1-2", "name": "Logitech Receiver" }
+  ]
 }
 ```
 
-Every key is always present. Empty collections serialize as `[]`.
+`inhibitors`, `wake_locks`, `audio_streams`, and `vms` are always present
+and serialize as `[]` when empty. `usb_wakeup` is verbose-gated: omitted
+entirely when `--verbose` was not set, `[]` when `--verbose` was set but
+no devices were found.
 
 ## `powercfg lastwake --json`
 
@@ -55,7 +60,10 @@ Every key is always present. Empty collections serialize as `[]`.
 {
   "last_sleep": "2025-12-25T21:40:21-08:00",   // null if no recent sleep
   "last_wake":  "2025-12-25T22:10:33-08:00",   // null if no recent wake
-  "wake_irq": { "irq": "9", "device": "acpi" },// null if unavailable
+  "wake_irq": {                                // null if no IRQ recorded
+    "irq": "9",
+    "device": "acpi"                           // null if IRQ not in /proc/interrupts
+  },
   "kernel_messages": ["string", "..."],        // omitted unless --verbose
   "acpi_enabled_devices": [                    // omitted unless --verbose
     { "device": "GPP0", "state": "S4", "enabled": true,
