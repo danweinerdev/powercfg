@@ -23,7 +23,7 @@ phases:
     depends_on: [1]
   - id: 4
     title: "Journal Integration"
-    status: in-progress
+    status: complete
     doc: "04-Journal-Integration.md"
     depends_on: [3]
   - id: 5
