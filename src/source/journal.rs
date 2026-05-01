@@ -45,7 +45,12 @@ fn run_journalctl(since: &str) -> Result<String, SourceError> {
     // path is the default. Same pattern as POWERCFG_SYSROOT in
     // `paths::SysRoot`.
     if let Some(path) = std::env::var_os(JOURNAL_FIXTURE_ENV) {
-        let _ = since; // ignored in fixture mode
+        // The `since` window is enforced by `journalctl --since` itself,
+        // not in-process. The fixture seam therefore cannot exercise the
+        // 7d-vs-30d distinction between default and `-n N` callers — that
+        // distinction is a calling-convention contract verified by reading
+        // the call sites, not by unit tests.
+        let _ = since;
         return std::fs::read_to_string(&path).map_err(SourceError::Io);
     }
     let mut cmd = Command::new("journalctl");
@@ -260,6 +265,9 @@ mod tests {
         // SAFETY: serialized via JOURNAL_FIXTURE_LOCK.
         unsafe { std::env::set_var(JOURNAL_FIXTURE_ENV, fixture_path()) };
 
+        // Fixture has 7 newline-terminated content lines: 1 `-- Boot --`
+        // banner + 6 PM events. The 6-event count below also proves the
+        // banner and any other non-PM lines are filtered out.
         let events = list_kernel_events("ignored").expect("fixture read should succeed");
         assert_eq!(events.len(), 6, "fixture has 6 PM: suspend e* lines");
         // Three sleep/wake cycles, alternating Sleep, Wake, Sleep, Wake, ...
@@ -275,22 +283,5 @@ mod tests {
         assert_eq!(events[0].time.hour(), 3);
         assert_eq!(events[5].time.day(), 29);
         assert_eq!(events[5].time.hour(), 8);
-    }
-
-    #[test]
-    fn list_kernel_events_skips_unrelated_lines() {
-        // The `-- Boot ... --` banner and any other non-PM lines must
-        // not produce SleepEvents — guarded by the matcher pre-filter.
-        let _lock = JOURNAL_FIXTURE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _guard = JournalFixtureGuard::capture();
-        // SAFETY: serialized via JOURNAL_FIXTURE_LOCK.
-        unsafe { std::env::set_var(JOURNAL_FIXTURE_ENV, fixture_path()) };
-
-        let events = list_kernel_events("ignored").expect("fixture read should succeed");
-        // Fixture file has 7 newline-terminated content lines (1 banner
-        // + 6 PM events). Only the 6 PM lines should appear.
-        assert_eq!(events.len(), 6);
     }
 }
