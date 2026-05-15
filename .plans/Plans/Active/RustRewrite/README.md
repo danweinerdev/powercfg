@@ -1,11 +1,11 @@
 ---
 title: "powercfg Rust Rewrite"
 type: plan
-status: active
+status: complete
 created: 2026-04-28
-updated: 2026-04-29
+updated: 2026-05-14
 tags: [rust, rewrite, cli]
-related: ["../../../Designs/RustRewrite/README.md", "../../../powercfg.py"]
+related: ["../../../Designs/RustRewrite/README.md"]
 phases:
   - id: 1
     title: "Foundation"
@@ -33,12 +33,22 @@ phases:
     depends_on: [1, 2, 3, 4]
   - id: 6
     title: "Cutover"
-    status: planned
+    status: complete
     doc: "06-Cutover.md"
     depends_on: [5]
+    notes: "6.1 complete; 6.2 (release automation) deferred by user 2026-05-14 — not required for the tool to build/install/run."
 ---
 
 # powercfg Rust Rewrite
+
+> **CLOSED 2026-05-14.** The tool is functionally complete: all six
+> subcommands work in text + `--json` modes, `powercfg.py` is deleted,
+> the repo builds/installs via cargo, 268 tests green. Phases 1–5 and
+> task 6.1 fully delivered. Task 6.2 (cargo-dist release automation +
+> GitHub release workflow) was deferred by user decision — it is
+> distribution plumbing, not tool functionality, and nothing in it
+> blocks building, installing, or running the binary. See
+> `06-Cutover.md` for the reopen recipe.
 
 ## Overview
 
