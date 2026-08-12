@@ -338,6 +338,14 @@ fn waketimers_default() {
 /// the rtc_wakealarm sysroot read.
 #[test]
 fn waketimers_verbose() {
+    // `all_timers` is only populated when the systemd timer walk over the
+    // system bus succeeds; when there is no bus at all (the RPM build
+    // container), the key is legitimately omitted. Skip rather than assert
+    // the environment into existence.
+    if !std::path::Path::new("/run/dbus/system_bus_socket").exists() {
+        eprintln!("skipping waketimers_verbose: no system D-Bus socket");
+        return;
+    }
     let v = run_json(
         &["waketimers", "--json", "-v"],
         &[("POWERCFG_SYSROOT", SYS_TYPICAL)],

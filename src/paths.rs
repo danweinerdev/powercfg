@@ -109,6 +109,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "rel must be relative")]
+    #[cfg(debug_assertions)]
     fn join_panics_on_absolute_rel_in_debug() {
         // Absolute rel paths would silently replace the root in release; the
         // debug_assert keeps tests honest.
