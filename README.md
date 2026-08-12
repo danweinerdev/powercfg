@@ -23,7 +23,11 @@ Once published to crates.io, you will also be able to run:
 cargo install powercfg
 ```
 
-Prebuilt binaries for common Linux targets will be attached to GitHub releases (available after the release workflow lands).
+### RPM packages
+
+`make package` builds x86_64 and aarch64 binary RPMs in a Fedora build container (podman or docker), running the test suite, clippy, and rustfmt against the native architecture first. The RPMs land in `tmp/rpmbuild/RPMS/`. `make install` (honouring `DESTDIR`/`PREFIX`) installs without RPM.
+
+Releases are cut with `make bump-{major,minor,patch}`: the version in `Cargo.toml` is bumped, committed, and tagged, then the full containerized package build verifies the tagged tree (unwinding the commit and tag on failure).
 
 ### Upgrading from the Python version
 

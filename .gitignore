@@ -11,4 +11,6 @@ Thumbs.db
 
 # Rust build output
 /target/
-/dist/
+
+# RPM build tree and cargo cache used by `make package`
+/tmp/
