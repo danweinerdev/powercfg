@@ -96,11 +96,16 @@ def ensure_clean_worktree() -> None:
     """A dirty tree would sweep unrelated edits into the version commit."""
     status = capture(["git", "status", "--porcelain"])
     # Cargo.lock is regenerated below; ignore it here and stage it explicitly
-    # afterwards.
+    # afterwards. Untracked files (`??`) are also fine: the release commit
+    # stages Cargo.toml and Cargo.lock by name, so they cannot be swept in —
+    # and this repo deliberately keeps some paths untracked. This matches the
+    # Makefile's .dirty check, which likewise ignores untracked entries.
     dirty = [
         line
         for line in status.splitlines()
-        if line.strip() and not line.endswith("Cargo.lock")
+        if line.strip()
+        and not line.startswith("??")
+        and not line.endswith("Cargo.lock")
     ]
     if dirty:
         listing = "\n".join(f"      {line}" for line in dirty)
